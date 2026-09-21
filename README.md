@@ -18,13 +18,33 @@ family — same output contract, exit codes, and family modules as
 
 ## Read this before trusting a run
 
-**No live browser capture of perplexity.ai exists yet.** Every sibling
-repo in this family started the same way and got corrected by a real
-capture (see `lidl-scraper`'s own README history for what that looked
-like); this repo hasn't reached that point. What's below is either
-confirmed from public, static sources, or explicitly marked as an
-unconfirmed guess — nothing in between, per this family's honesty rule
-(`CLAUDE.md` §15).
+**A live incident now exists: perplexity.ai served a real Cloudflare
+managed challenge, twice, to a real browser.** On 2026-09-21, two
+separate, freshly-opened attempts against two different real
+`/page/{slug}-{id}` URLs both got redirected to the bare origin and
+served the identical Cloudflare "managed challenge" interstitial
+(`cType: 'managed'`, Ray ID `a3e80852cfb8ae37`) instead of any Page
+content — not a one-off, not URL-specific. `captcha_solver.
+detect_from_html()` correctly flags the captured page as blocked (exit
+`3`), and `page_parser.BOT_CHALLENGE_MARKERS` now carries two
+site-specific corroborating markers alongside the generic ones — see
+`CHANGELOG.md`'s dated entry and `page_parser.py`'s module docstring for
+the full incident, and `tests/fixtures/perplexity_cloudflare_block_real.html`
+for the captured page itself.
+
+**This confirms the site can block a request; it does NOT yet confirm
+what this repo's own scraper engines get when they run against it** —
+the capture above came from a full browser-rendering tool, not from
+`playwright_scraper.py`/`selenium_scraper.py`/`puppeteer_scraper.py`
+themselves, and a "managed" challenge sometimes clears silently for a
+client Cloudflare trusts, which may or may not include a real headless
+Playwright run. Every sibling repo in this family started with zero live
+data and got corrected by a real capture (see `lidl-scraper`'s own README
+history for what that looked like); this repo now has one confirmed data
+point — a block — but still no confirmed successful Page render. What's
+below is either confirmed from public, static sources, confirmed from the
+live incident above, or explicitly marked as an unconfirmed guess —
+nothing in between, per this family's honesty rule (`CLAUDE.md` §15).
 
 **Confirmed** (from `robots.txt`, the sitemap, and third-party/first-party
 writeups — no browser needed):
@@ -55,11 +75,15 @@ untested), and `NAV_TIMEOUT_MS`/`READINESS_WAIT_MS`, which are carried
 over unchanged from `lidl-scraper`'s own measured values, not
 independently measured against this site.
 
-Direct HTTP access to perplexity.ai is blocked from every automated shell
-this repo was built in — the first real live run has to come from a
-human's own terminal, exactly as it did for `lidl-scraper`/
-`skyscanner-scraper`/`stockx-scraper` before this repo existed. If you run
-this against the real site, please open an issue or PR with what you
+Direct HTTP access to perplexity.ai is blocked from every plain-`curl`-
+style automated shell this repo was built in — the first real run of this
+repo's OWN engines still has to come from a human's own terminal, exactly
+as it did for `lidl-scraper`/`skyscanner-scraper`/`stockx-scraper` before
+those repos existed, and now doubly so given the confirmed block above:
+whether `--proxy`/`--cdp-endpoint`/`--fingerprint` are needed by default
+for this site (rather than the "local-first" framing the rest of this
+README uses) is now a real open question, not a hypothetical one. If you
+run this against the real site, please open an issue or PR with what you
 found (matching or not) — `page_parser.py`'s selectors are written to be
 easy to correct in place once a real capture confirms or refutes them.
 
@@ -254,12 +278,16 @@ site):
   feature, not static published content, and `robots.txt` disallows the
   search/query paths that would be needed to reach it anyway. This repo
   only ever targets a Page's own already-published content.
-- **No site-specific block-page marker exists.** `page_parser.
-  BOT_CHALLENGE_MARKERS` is deliberately empty — detection still runs via
-  `captcha_solver.GENERIC_BOT_CHALLENGE_MARKERS` (Cloudflare/reCAPTCHA/
-  hCaptcha/PerimeterX/DataDome wording), but nothing specific to how
-  perplexity.ai's own block page (if one exists) reads has been captured
-  yet. If you hit one, `TESTING.md` explains how to add it.
+- **A site-specific block-page marker now exists**, from a real, captured
+  incident (see "Read this before trusting a run" above): `page_parser.
+  BOT_CHALLENGE_MARKERS` carries two markers confirmed against the actual
+  Cloudflare managed-challenge page perplexity.ai served on 2026-09-21.
+  Generic detection via `captcha_solver.GENERIC_BOT_CHALLENGE_MARKERS`
+  already caught this same incident independently. What's still unknown:
+  whether this site ALSO serves a different challenge type in some other
+  circumstance (a different locale, IP reputation, or request pattern) —
+  if you hit one that doesn't match what's captured, `TESTING.md`
+  explains how to add it.
 - **Captcha token injection on a locally-launched browser is not
   implemented**, same reason as the rest of the family: injecting a
   solved token is widget/site-specific, and no real challenge from this

@@ -165,6 +165,29 @@ def _():
         assert skipped == 1
 
 
+@check("BOT_CHALLENGE_MARKERS matches the real, captured Cloudflare managed-challenge incident (2026-09-21), not a guess")
+def _():
+    # Updated once a real perplexity.ai block page existed to check against
+    # (see page_parser.py's module docstring and BOT_CHALLENGE_MARKERS
+    # comment for the full incident) — before that, this asserted the tuple
+    # was EMPTY, since no site-specific marker could be honestly claimed as
+    # verified yet. Every marker here must appear in the actual captured
+    # fixture, not just be plausible-sounding.
+    real_block_page = (ROOT / "tests" / "fixtures" / "perplexity_cloudflare_block_real.html").read_text(encoding="utf-8")
+    assert pp.BOT_CHALLENGE_MARKERS, "the real incident below should have left at least one marker"
+    for marker in pp.BOT_CHALLENGE_MARKERS:
+        assert marker.lower() in real_block_page.lower(), f"{marker!r} does not match the actual captured incident"
+    assert len(captcha_solver.GENERIC_BOT_CHALLENGE_MARKERS) > 0
+    # The generic detector alone already caught this exact page (via its
+    # own "cf-turnstile"/"challenges.cloudflare.com"/"cdn-cgi/challenge-
+    # platform" strings) — the site-specific markers above are
+    # corroboration, not the only thing standing between this repo and a
+    # misreported "empty" run.
+    assert captcha_solver.detect_from_html(real_block_page), (
+        "detect_from_html must flag the real captured Cloudflare challenge as a block"
+    )
+
+
 # --------------------------------------------------------------------------- #
 # output_writer — exit codes / precedence / dedupe (CLAUDE.md §9)
 # --------------------------------------------------------------------------- #

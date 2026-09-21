@@ -1,11 +1,21 @@
 # Testing with real credentials and the live site
 
-**Nothing below has been run live yet.** This repo's build environment
-could not reach perplexity.ai directly (every automated shell available
-hit a proxy-level 403) — every item here is open. Offline checks
-(`smoke_test.py`) are useful for the architecture, but do not substitute
-for the runs below; see README "Read this before trusting a run" for
-what's confirmed from static research versus what's an unverified guess.
+**Nothing below has been run with this repo's OWN engines yet.** This
+repo's build environment could not reach perplexity.ai directly from any
+plain-`curl`-style shell (every one available hit a proxy-level 403) — so
+every item below involving `playwright_scraper.py`/`selenium_scraper.py`/
+`puppeteer_scraper.py` is still open. **One thing is no longer open**: a
+full browser-rendering tool (not a `curl`-style shell — a real browser
+pane) DID reach perplexity.ai directly, twice, and got served a real
+Cloudflare managed challenge both times (see README "Read this before
+trusting a run" and `page_parser.py`'s module docstring for the full
+incident, `CHANGELOG.md` for the dated entry). That's a confirmed data
+point about the SITE, not about this repo's own scrapers — it doesn't
+tell you whether a real Playwright run behaves the same way, since a
+managed challenge can pass silently for a client Cloudflare trusts and
+headless Chromium is exactly the kind of client it's designed to be
+suspicious of. Offline checks (`smoke_test.py`) are useful for the
+architecture, but do not substitute for the runs below.
 
 Run everything below from a normal terminal on your own machine — wherever
 this repo lives for you.
@@ -62,12 +72,24 @@ Four outcomes, and what each one means:
   the expected first-run outcome if the selectors need updating — not
   evidence the Page itself is inaccessible.
 - **`exit code: 3` (blocked)**: a `captcha_solver.GENERIC_BOT_CHALLENGE_
-  MARKERS` hit, or an HTTP >=400 status. No incident like this has ever
-  been captured for perplexity.ai — if you get one, this is genuinely new
-  information: save a scrubbed capture, and add site-specific markers to
-  `page_parser.BOT_CHALLENGE_MARKERS` the same way `skyscanner-scraper`'s
-  PerimeterX incident did for that repo (see its CHANGELOG entry for the
-  shape of that kind of entry).
+  MARKERS` hit, or an HTTP >=400 status. **This is now the confirmed,
+  expected first outcome, not a hypothetical one** — a live capture
+  already exists (see README "Read this before trusting a run",
+  `page_parser.py`'s module docstring, and `tests/fixtures/
+  perplexity_cloudflare_block_real.html`) showing perplexity.ai serving a
+  Cloudflare managed challenge to a real browser twice in a row. If your
+  own run also lands here, check first whether the raw HTML (`--dump-html`)
+  matches the captured fixture — if it does, this is the same known
+  incident, not new information. If it DOESN'T match (a different
+  challenge type, a different vendor, or a different page shape
+  entirely), that IS genuinely new: save a scrubbed capture alongside the
+  existing one, and extend `page_parser.BOT_CHALLENGE_MARKERS` with
+  markers specific to it, the same way `skyscanner-scraper`'s PerimeterX
+  incident did for that repo (see its CHANGELOG entry for the shape of
+  that kind of entry). Also worth checking, now that a block is
+  confirmed real: whether `--cdp-endpoint` (the Scraping Browser API,
+  which ships 2Captcha's own captcha-solving extension) gets past it when
+  a plain local run doesn't.
 - **A real Page renders but the sources/citations list or the two
   engagement counters don't parse even though the title does**: this is
   the single most likely partial-miss outcome given how little of
@@ -183,8 +205,12 @@ Then, in the GitHub repo's Settings:
   landed on.
 - `page_parser.py` updated to match what you actually saw, with a fixture
   under `tests/fixtures/` and a new `smoke_test.py` check, per
-  `CONTRIBUTING.md` — this repo has no real-capture fixture at all yet,
-  unlike `lidl-scraper`'s `tests/fixtures/lidl_search_real.html`.
+  `CONTRIBUTING.md` — this repo now has one real-capture fixture
+  (`tests/fixtures/perplexity_cloudflare_block_real.html`, a confirmed
+  BLOCK page, added 2026-09-21), same as `lidl-scraper`'s
+  `tests/fixtures/lidl_search_real.html`, but still no fixture of a real,
+  successfully-rendered Page — that's the one this checklist item is
+  really asking for.
 - Whether perplexity.ai emits any JSON-LD on a Page, and whether OG meta
   tags are actually server-rendered there, answered one way or the other
   (see README "Read this before trusting a run") and reflected in

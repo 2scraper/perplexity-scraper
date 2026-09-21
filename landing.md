@@ -14,7 +14,28 @@ Check Perplexity's own site and API offerings for anything a formal integration 
 
 ## Read this before you rely on it
 
-**No live browser capture of perplexity.ai exists yet.** Every selector in `page_parser.py` is a best-effort guess — some grounded in public research (`robots.txt`, the sitemap, Perplexity's own announcement blog for the Pages feature), some just a reasonable bet (that Open Graph meta tags are server-rendered for sharing). What IS confirmed without a browser: Perplexity Pages are real, public wiki-style articles at `perplexity.ai/page/{slug}-{id}`, not blocked by `robots.txt`, and they have no site-search mechanism — which is why this tool takes a URL (or a file of them) rather than a search query, unlike this project's sibling scrapers. The architecture (exit codes, output schema, dedupe, credential handling, all three engines) is real and tested, same as every 2scraper repo. Full honesty section, with exactly what's confirmed and what's still a guess, in the [repository README](https://github.com/2scraper/perplexity-scraper#readme) — read it before you point this at anything that matters.
+**Update: a live incident now exists.** On 2026-09-21, perplexity.ai
+served a real Cloudflare managed challenge — twice, to two different
+real Page URLs — instead of any Page content. This repo's block
+detection correctly catches it (confirmed against the actual captured
+page). What it does NOT yet confirm is whether this repo's own scraper
+engines get the same treatment as a plain browser, or any selector below
+against a real, successfully-rendered Page — this was a block page, not
+a results page. Every selector in `page_parser.py` for an actual Page's
+content is still a best-effort guess — some grounded in public research
+(`robots.txt`, the sitemap, Perplexity's own announcement blog for the
+Pages feature), some just a reasonable bet (that Open Graph meta tags are
+server-rendered for sharing). What IS confirmed: Perplexity Pages are
+real, public wiki-style articles at `perplexity.ai/page/{slug}-{id}`, not
+blocked by `robots.txt`; they have no site-search mechanism — which is
+why this tool takes a URL (or a file of them) rather than a search query,
+unlike this project's sibling scrapers; and the site fronts at least some
+requests with a Cloudflare challenge. The architecture (exit codes,
+output schema, dedupe, credential handling, all three engines) is real
+and tested, same as every 2scraper repo. Full honesty section, with
+exactly what's confirmed and what's still a guess, in the [repository
+README](https://github.com/2scraper/perplexity-scraper#readme) — read it
+before you point this at anything that matters.
 
 ## What you get
 

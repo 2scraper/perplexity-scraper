@@ -1,0 +1,29 @@
+<!--
+  REAL capture, trimmed for size (original had far more inline CSS/JS,
+  none of it load-bearing for detection) — not synthetic. Captured live
+  2026-09-21 against a real https://www.perplexity.ai/page/{slug}-{id}
+  URL via a browser-rendering tool (not a curl-style shell — see this
+  repo's page_parser.py module docstring and CHANGELOG.md for the full
+  incident). Every marker in page_parser.BOT_CHALLENGE_MARKERS and every
+  string captcha_solver.GENERIC_BOT_CHALLENGE_MARKERS is expected to match
+  here is left exactly as captured, byte-for-byte on the relevant
+  substrings. Nothing sensitive was trimmed: this is Cloudflare's own
+  generic challenge page, not perplexity.ai's own content or any
+  user/account data.
+-->
+<html lang="en-US" dir="ltr"><head><title>Один момент…</title><meta http-equiv="Content-Type" content="text/html; charset=UTF-8"><meta http-equiv="X-UA-Compatible" content="IE=Edge"><meta name="robots" content="noindex,nofollow"><meta name="viewport" content="width=device-width,initial-scale=1"><meta http-equiv="content-security-policy" content="default-src 'none'; script-src 'nonce-AHES0dX1OlFEuA9ZASyIwf' 'unsafe-eval' https://challenges.cloudflare.com; script-src-attr 'none'; style-src 'unsafe-inline'; img-src 'self' https://challenges.cloudflare.com; connect-src 'self' https://challenges.cloudflare.com; frame-src 'self' https://challenges.cloudflare.com blob:; child-src 'self' https://challenges.cloudflare.com blob:; worker-src blob:; form-action http: https:; base-uri 'self'">
+<script src="/cdn-cgi/challenge-platform/h/g/orchestrate/chl_page/v1?ray=a3e80852cfb8ae37"></script>
+<script src="https://challenges.cloudflare.com/turnstile/v0/g/330e41bb475c/api.js?onload=khCN8&render=explicit" async defer crossorigin="anonymous"></script>
+</head><body>
+<div class="main-wrapper" role="main"><div class="main-content">
+<h1>www.perplexity.ai</h1>
+<h2>Выполнение проверки безопасности</h2>
+<p>Этот веб-сайт использует сервис безопасности для защиты от вредоносных ботов. Эта страница отображается, пока веб-сайт проверяет, что вы не бот.</p>
+<div><input type="hidden" name="cf-turnstile-response" id="cf-chl-widget-qblbv_response"></div>
+<noscript><div class="h2"><span id="challenge-error-text">Enable JavaScript and cookies to continue</span></div></noscript>
+</div></div>
+<div class="footer"><div class="ray-id">Ray ID: <code>a3e80852cfb8ae37</code></div>
+<span>Производительность и безопасность с <a href="https://www.cloudflare.com?utm_source=challenge&utm_campaign=m">Cloudflare</a></span>
+</div>
+<script>window._cf_chl_opt = {cType: 'managed', cRay: 'a3e80852cfb8ae37', cZone: 'www.perplexity.ai'};</script>
+</body></html>

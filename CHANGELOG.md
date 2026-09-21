@@ -9,6 +9,45 @@ rather than being a silent violation of that.
 
 ## [Unreleased]
 
+### Added — 2026-09-21, first live incident: a real Cloudflare managed challenge
+- **First live data point ever captured for this site, and it's a
+  block.** A full browser-rendering tool (not a `curl`-style shell — see
+  `TESTING.md` for that distinction) made two separate, freshly-opened
+  requests against two different real `https://www.perplexity.ai/page/
+  {slug}-{id}` URLs. Both got redirected to the bare origin and served the
+  identical Cloudflare "managed challenge" interstitial (`cType:
+  'managed'`, Ray ID `a3e80852cfb8ae37`) instead of any Page content —
+  ruling out a one-off fluke or a URL-specific block.
+- Verified `captcha_solver.detect_from_html()` against the actual
+  captured HTML: returns `True` (three generic markers hit: `"cf-turnstile"`,
+  `"challenges.cloudflare.com"`, `"cdn-cgi/challenge-platform"`) — this
+  repo's existing block detection would correctly report exit `3`
+  (`blocked`) on this exact page, not misreport it as `4` (`empty`).
+- Added `page_parser.BOT_CHALLENGE_MARKERS` (`"cf-chl-widget"`,
+  `"_cf_chl_opt"`) as durable, site-specific corroboration of the same
+  incident, mirroring `skyscanner-scraper`'s PerimeterX precedent — not a
+  replacement for the generic detector, which already caught this on its
+  own.
+- Saved the captured page as `tests/fixtures/perplexity_cloudflare_block_real.html`
+  (trimmed for size, nothing sensitive removed — it's Cloudflare's own
+  generic challenge page, not any perplexity.ai content or account data)
+  and added a `smoke_test.py` check asserting both the site-specific
+  markers and the generic detector correctly flag it.
+- Updated `page_parser.py`'s module docstring, `README.md`'s "Read this
+  before trusting a run" and "Known limitations" sections, and
+  `TESTING.md`'s step 2 to reflect this as confirmed, not hypothetical.
+- **What this does NOT confirm, to be precise about the boundary**:
+  whether this repo's own engines (`playwright_scraper.py`/
+  `selenium_scraper.py`/`puppeteer_scraper.py`) get the same treatment —
+  the capture came from a different client than a real headless
+  Playwright run, and a Cloudflare "managed" challenge can pass silently
+  for a client Cloudflare trusts. No selector in `page_parser.py` is any
+  more or less confirmed than before — this was a block page, not a
+  results page. The first real run of this repo's own engines against
+  this site, and the question of whether `--proxy`/`--cdp-endpoint`/
+  `--fingerprint` end up being necessary defaults rather than opt-in power
+  options for this specific site, both remain open — see `TESTING.md`.
+
 ### Added — 2026-09-21, initial build
 - First build of `perplexity-scraper`, the fourth member of the
   [2scraper](https://github.com/2scraper) family (after `stockx-scraper`,

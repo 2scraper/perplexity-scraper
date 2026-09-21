@@ -6,20 +6,50 @@ scraper's flight_parser.py, and stockx-scraper's product_parser.py).
 **Honesty note, read before trusting anything below** (CLAUDE.md §15: an
 unverified site gets that stated plainly, not glossed over).
 
-Written 2026-09-21 with **NO live browser capture of a real Perplexity
-Page yet** — every selector below is a best-effort guess, marked
-`# TODO: verify live`, exactly the state lidl-scraper's own parser was in
-before Roman's first real capture corrected it (see that file's module
-docstring for what "before" looked like). Direct HTTP access to
-perplexity.ai is blocked from every shell available to me in this
-environment (the cloud sandbox's own network egress and the device-bridge
-VM on Roman's machine both hit a proxy-level 403); only research through
-WebFetch/WebSearch was possible, and Perplexity's own app is a
-client-rendered SPA — those tools only ever saw an empty shell for actual
-`/page/...` URLs, never a real Page's rendered HTML. **The first real live
-run against this site must come from Roman's own terminal** (outside any
-tool-mediated shell), exactly as it did for lidl.com/skyscanner.com/
-stockx.com before this file's selectors can be trusted.
+Written 2026-09-21, and **still no confirmed capture of a real, rendered
+Perplexity Page** — every selector below remains a best-effort guess,
+marked `# TODO: verify live`. Direct HTTP access to perplexity.ai is
+blocked from every plain-`curl`-style shell available while building this
+(the cloud sandbox's own network egress and the device-bridge VM on
+Roman's machine both hit a proxy-level 403); only research through
+WebFetch/WebSearch was possible for the article text above, and
+Perplexity's own app is a client-rendered SPA — those tools only ever saw
+an empty shell for actual `/page/...` URLs, never a real Page's rendered
+HTML.
+
+**UPDATE, same day, first live capture of the SITE ITSELF (not yet of
+this repo's own scrapers) — a real, live incident, not a guess.** A
+full browser-rendering tool (not a `curl`-style shell — see TESTING.md
+for the distinction) reached `perplexity.ai` and got served a genuine
+Cloudflare "managed challenge" interstitial (`cType: 'managed'`, Ray ID
+`a3e80852cfb8ae37`) instead of any Page content, on **two separate,
+freshly-opened attempts against two different `/page/...` URLs** — both
+redirected to the bare origin and served the identical challenge page
+("Один момент…" / "Just a moment..."), which rules out a one-off fluke or
+a URL-specific block. This is now a confirmed, live, real finding — see
+`BOT_CHALLENGE_MARKERS` below, `CHANGELOG.md`'s dated entry, and
+`tests/fixtures/perplexity_cloudflare_block_real.html` for the captured
+page. `captcha_solver.detect_from_html()` was run against this exact
+captured HTML and correctly returns `True` (three markers hit:
+`"cf-turnstile"`, `"challenges.cloudflare.com"`,
+`"cdn-cgi/challenge-platform"`) — this repo's block detection would not
+have silently misreported this run as `empty`.
+
+**What this DOES confirm**: perplexity.ai fronts at least some requests
+with a Cloudflare managed challenge, and this family's generic detector
+already catches it (exit `3`, not `4`). **What this does NOT confirm**:
+whether `playwright_scraper.py`'s own headless request (a different
+client than the browser-rendering tool used here) gets the same
+treatment, whether it ever clears on its own without solving anything (a
+"managed" challenge sometimes passes silently for a client Cloudflare
+trusts), or any selector below — this was a block page, not a results
+page, so the actual parsing logic is exactly as unverified as before.
+**The first real run of this repo's own engines against this site still
+has to come from a human's own terminal** (outside any tool-mediated
+shell), exactly as it did for lidl.com/skyscanner.com/stockx.com before
+those files' selectors could be trusted — see `TESTING.md` step 2 for
+what that run needs to check now that a block is a live, confirmed
+possibility and not just a theoretical exit code.
 
 What IS confirmed, from `robots.txt`, the sitemap, and third-party/
 first-party writeups (see README for the full source list):
@@ -97,13 +127,37 @@ MIN_CARD_MATCHES = 1  # per family invariant (CLAUDE.md §5) — but unlike a se
                        # constant exists for signature parity with the engines' readiness-wait
                        # helper, not because more than one match is ever expected on this site.
 
-# No live capture of a perplexity.ai BOT-CHALLENGE page exists (confirmed
-# nothing has been captured live at all yet — see module docstring). Left
-# empty on purpose, same starting state every sibling repo had before its
-# own first live incident — `captcha_solver.GENERIC_BOT_CHALLENGE_MARKERS`
-# already covers the common cases generically; site-specific corroborating
-# markers get added here the moment a real one is captured, per TESTING.md.
-BOT_CHALLENGE_MARKERS: tuple = ()
+# REAL, live-captured incident (2026-09-21, via a browser-rendering tool —
+# see module docstring and TESTING.md): a fresh visit to a real
+# `/page/{slug}-{id}` URL got served Cloudflare's own "managed challenge"
+# interstitial (`cType: 'managed'`, Ray ID `a3e80852cfb8ae37`) instead of
+# any Page content — confirmed on two separate attempts against two
+# different Page URLs, not a one-off. `captcha_solver.
+# GENERIC_BOT_CHALLENGE_MARKERS` already catches this via its generic
+# `"cf-turnstile"` / `"challenges.cloudflare.com"` /
+# `"cdn-cgi/challenge-platform"` strings (confirmed: `detect_from_html()`
+# on the actual captured HTML returns `True`) — the markers below are
+# added anyway, as durable, site-specific corroboration of the SAME
+# incident, not a replacement for the generic check, mirroring
+# skyscanner-scraper's PerimeterX precedent:
+#   - `cf-chl-widget` — the id prefix Cloudflare's own challenge form uses
+#     for its hidden Turnstile response field on THIS site's challenge
+#     page (`id="cf-chl-widget-qblbv_response"`).
+#   - `_cf_chl_opt` — the inline JS object Cloudflare's challenge-platform
+#     script sets on the page (`window._cf_chl_opt = {cType: 'managed', ...}`).
+# What this incident does NOT confirm: any selector elsewhere in this file
+# (`# TODO: verify live`) — this was a block page, not a results page.
+# `captcha_solver.py`'s own `_UNSUPPORTED_VENDOR_MARKERS` already lists a
+# bare Cloudflare managed challenge as a vendor with no automated solve
+# path (pending confirmation, per that file's comment) — this incident is
+# real-world corroboration of exactly that case, not yet acted on here
+# since `captcha_solver.py` is a family-shared module (CLAUDE.md §7) and a
+# cross-cutting change to it deserves a conscious, family-wide decision
+# rather than a one-repo edit.
+BOT_CHALLENGE_MARKERS: tuple = (
+    "cf-chl-widget",
+    "_cf_chl_opt",
+)
 
 # Confirmed real from robots.txt: these path prefixes are explicitly
 # disallowed for every crawler. Not used to block a request this tool

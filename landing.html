@@ -178,14 +178,18 @@
       content — everything outside that.
     </div>
     <div class="callout honest">
-      <strong>Read this before you rely on it:</strong> no live browser capture of perplexity.ai exists yet.
-      Every selector in <code>page_parser.py</code> is a best-effort guess — some grounded in public research
+      <strong>Read this before you rely on it:</strong> a live incident now exists — on 2026-09-21,
+      perplexity.ai served a real Cloudflare managed challenge, twice, to two different real Page URLs,
+      instead of any Page content. This repo's block detection correctly catches it. That does NOT yet
+      confirm what this repo's own scraper engines get when they actually run against the site, or any
+      selector in <code>page_parser.py</code> for a real Page's content — some grounded in public research
       (<code>robots.txt</code>, the sitemap, Perplexity's own announcement blog for the Pages feature), some
-      just a reasonable bet. What IS confirmed without a browser: Pages are real, public articles at
+      just a reasonable bet, all still unconfirmed. What IS confirmed: Pages are real, public articles at
       <code>perplexity.ai/page/{slug}-{id}</code>, allowed by <code>robots.txt</code>, with no site-search
-      mechanism — which is why this tool takes a URL rather than a query, unlike its sibling scrapers. The
-      architecture (exit codes, output schema, dedupe, all three engines) is real and tested, same as every
-      2scraper repo. Full details in the
+      mechanism — which is why this tool takes a URL rather than a query, unlike its sibling scrapers — and
+      the site fronts at least some requests with a Cloudflare challenge. The architecture (exit codes,
+      output schema, dedupe, all three engines) is real and tested, same as every 2scraper repo. Full
+      details in the
       <a href="https://github.com/2scraper/perplexity-scraper#readme">README</a> — read it first.
     </div>
   </section>
