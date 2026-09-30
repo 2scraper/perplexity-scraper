@@ -67,57 +67,40 @@ class Product:
     not applicable, exactly the way skyscanner-scraper repurposed `brand`
     for "operating airline" instead of leaving the family contract behind:
 
-    - `sku`: the Page's own 22-character id, the stable part of its URL
-      (`/page/{slug}-{id}`) — a Page's slug can in principle be edited by
-      its author without changing the id, so `sku` tracks the id alone,
-      never the slug, for the same reason lidl-scraper's `sku` tracks the
-      site's own product id rather than a URL that can be redirected.
-    - `category`: **not applicable.** Perplexity does not expose a
-      Page-level taxonomy/category the way a grocery aisle or a flight's
-      cabin class is exposed — always `None` here. (If a future capture
-      finds Pages ARE tagged with topics somewhere in the DOM/embedded
-      state, this should change to carry that — not stay `None` out of
-      inertia.)
-    - `brand`: **not applicable** — there is no brand-equivalent concept
-      for a wiki article. Always `None`. (`author`, below, is the closest
-      real analogue, and gets its own field rather than overloading this
-      one, unlike skyscanner's airline reuse — an article's author is not
-      well described as its "brand".)
-    - `price` / `currency` / `price_source`: **not applicable** — Pages
-      are free to read and are not commerce listings. Always `None`.
-      (Kept, rather than dropped, so `diff_runs.py`'s generic added/
-      removed/changed-by-sku logic — which only cares about a row having
-      a `sku` and a `title` — still works unmodified for tracking which
-      Pages appeared or disappeared between two runs, which IS a
-      meaningful signal for a wiki site even without price data.)
-    - `image_url`: the Page's own cover/hero image if it has one
-      (best-effort; many Pages may not set one — see `page_parser.py`).
+    - `sku`: `perplexity-{id}`, where `{id}` is the 22-character tail of
+      the article's own `thread_url_slug` (confirmed live 2026-09-30: an
+      old `/page/How-to-Generate-VzUTuvQVSIqru3QGvPihlg` link and its
+      current canonical slug `perplexity-ai-pages-guide-gene-VzUTuvQVSIqru3QGvPihlg`
+      share the id while the slug changed). Ids can contain `.` and `_`.
+    - `category`: the Discover topic from the URL (`/discover/top/...` →
+      `top`). A classic `/page/...` Page has none → `None`.
+    - `brand` / `price` / `currency` / `price_source`: **not applicable**,
+      always `None`. Kept so `diff_runs.py` and the family's row prefix
+      stay unchanged (CLAUDE.md §9).
+    - `image_url`: the first `featured_images[].image`, when there is one.
 
-    Site-specific tail, all genuinely new (no prior family member has a
-    content site to draw a precedent from):
+    Site-specific tail, every field read from the article's own
+    `/rest/article/{slug}` JSON (see `page_parser.py`):
 
-    - `author`: the Page's listed creator/attribution name, when shown.
-    - `view_count` / `follow_up_question_count`: the two engagement
-      counters Perplexity's own announcement post confirms Pages display.
-    - `source_count`: how many citations `page_parser.py` found in the
-      Page's sources/citations list.
-    - `sources_json`: that citations list, JSON-encoded as a string (not a
-      native list) so every row stays one flat CSV line, consistent with
-      how the JSON writer represents the exact same string — the caller
-      decodes it with `json.loads()` if they need the list back.
-    - `section_count` / `word_count`: rough shape-of-the-article signals
-      computed from whatever body content `page_parser.py` could extract
-      — useful for a quick "did this page just become a stub" comparison
-      across two runs, without needing the full body text in every row.
-    - `slug`: the human-readable part of the Page's URL, kept separately
-      from `sku` (the id) exactly because the two can drift — see `sku`
-      above.
-    - `published_at`: the Page's own publish/last-updated date string, if
-      one is exposed on the page. **Unverified as of this writing** — no
-      live capture of a real Page has been possible from this environment
-      (see README's "Read this before trusting a run"); `page_parser.py`
-      marks the selector(s) that populate this as best-effort/TODO until
-      someone runs this against the real site and confirms.
+    - `author`: `author_username`.
+    - `view_count` / `like_count` / `fork_count`: `social_info`.
+    - `source_count` / `sources_json`: every distinct cited URL across all
+      sections (`web_results` plus `article_info.cited_search_results`),
+      as a JSON string of `{"url", "title"}` so a CSV row stays flat.
+    - `section_count` / `word_count`: the number of sections (`entries`)
+      and the words across their answers.
+    - `slug`: the canonical `thread_url_slug`.
+    - `summary`: `article_info.summary` (Discover articles; classic Pages
+      have none).
+    - `read_time_minutes`: `article_info.read_time`.
+    - `published_at` / `updated_at`: `article_info.first_published` /
+      `updated_datetime`.
+
+    Removed 2026-09-30 after the first live capture:
+    `follow_up_question_count`. Nothing in the article JSON, the HTML or
+    the Discover feed carries it (measured on a 2024 Page and a 2026
+    Discover article), and a column that is null on every row should not
+    exist (CLAUDE.md §9).
     """
 
     # --- family-common ---
@@ -136,13 +119,17 @@ class Product:
     # --- perplexity.ai-specific (wiki article) ---
     author: Optional[str] = None
     view_count: Optional[int] = None
-    follow_up_question_count: Optional[int] = None
+    like_count: Optional[int] = None
+    fork_count: Optional[int] = None
     source_count: Optional[int] = None
     sources_json: Optional[str] = None
     section_count: Optional[int] = None
     word_count: Optional[int] = None
     slug: Optional[str] = None
+    summary: Optional[str] = None
+    read_time_minutes: Optional[int] = None
     published_at: Optional[str] = None
+    updated_at: Optional[str] = None
 
 
 PRODUCT_FIELD_NAMES: List[str] = [f.name for f in fields(Product)]

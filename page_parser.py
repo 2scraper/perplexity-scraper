@@ -1,106 +1,50 @@
 #!/usr/bin/env python3
-"""page_parser.py — this IS the perplexity.ai site knowledge (the wiki-
-article-family analog of lidl-scraper's lidl_parser.py, skyscanner-
-scraper's flight_parser.py, and stockx-scraper's product_parser.py).
+"""page_parser.py — this IS the perplexity.ai site knowledge.
 
-**Honesty note, read before trusting anything below** (CLAUDE.md §15: an
-unverified site gets that stated plainly, not glossed over).
+**Rewritten 2026-09-30 from the first live capture of real articles**
+(through a US Scraping Browser API profile over CDP: HTTP 200, no
+Cloudflare challenge on any of the requests below). Everything this file
+extracts from is CONFIRMED against that capture; the fixtures in
+`tests/fixtures/*_live_20260930.json` are the unedited API responses.
 
-Written 2026-09-21, and **still no confirmed capture of a real, rendered
-Perplexity Page** — every selector below remains a best-effort guess,
-marked `# TODO: verify live`. Direct HTTP access to perplexity.ai is
-blocked from every plain-`curl`-style shell available while building this
-(the cloud sandbox's own network egress and the device-bridge VM on
-Roman's machine both hit a proxy-level 403); only research through
-WebFetch/WebSearch was possible for the article text above, and
-Perplexity's own app is a client-rendered SPA — those tools only ever saw
-an empty shell for actual `/page/...` URLs, never a real Page's rendered
-HTML.
+What the site actually is today:
 
-**UPDATE, same day, first live capture of the SITE ITSELF (not yet of
-this repo's own scrapers) — a real, live incident, not a guess.** A
-full browser-rendering tool (not a `curl`-style shell — see TESTING.md
-for the distinction) reached `perplexity.ai` and got served a genuine
-Cloudflare "managed challenge" interstitial (`cType: 'managed'`, Ray ID
-`a3e80852cfb8ae37`) instead of any Page content, on **two separate,
-freshly-opened attempts against two different `/page/...` URLs** — both
-redirected to the bare origin and served the identical challenge page
-("Один момент…" / "Just a moment..."), which rules out a one-off fluke or
-a URL-specific block. This is now a confirmed, live, real finding — see
-`BOT_CHALLENGE_MARKERS` below, `CHANGELOG.md`'s dated entry, and
-`tests/fixtures/perplexity_cloudflare_block_real.html` for the captured
-page. `captcha_solver.detect_from_html()` was run against this exact
-captured HTML and correctly returns `True` (three markers hit:
-`"cf-turnstile"`, `"challenges.cloudflare.com"`,
-`"cdn-cgi/challenge-platform"`) — this repo's block detection would not
-have silently misreported this run as `empty`.
+  - Two URL kinds serve the same article object:
+      * classic Pages, `/page/{slug}-{id}`. Creating new Pages is currently
+        retired by Perplexity, but existing links still resolve: the
+        client rewrites `/page/How-to-Generate-VzUTuvQVSIqru3QGvPihlg` to
+        `/page/{backend_uuid}`;
+      * Discover articles, `/discover/{topic}/{slug}-{id}` — where
+        Perplexity publishes new articles now (`/discover` links only to
+        these).
+    `{id}` is a 22-character token that may contain `.`, `_` and `-`
+    (`.FiJwwm9STi9_gZ5rgyhXQ`, `P.Mg27lmRU21zVNesSK35g` — seen live).
+  - **The page's own data source is `GET /rest/article/{ref}`**, where
+    `{ref}` is the slug-with-id OR the backend uuid. It returns
+    `{"status": "success", "entries": [...]}`, one entry per article
+    section, the first carrying the article-level fields
+    (`thread_url_slug`, `author_username`, `social_info`,
+    `featured_images`, `article_info.{title, summary, read_time,
+    first_published}`). Each entry's `text` is itself a JSON string with
+    `answer` (the section's markdown) and `web_results` (its sources).
+    An unknown ref answers HTTP 400.
+  - The server-rendered HTML carries NO article data worth trusting: no
+    JSON-LD, and the Open Graph tags are the site-wide defaults on every
+    page (`og:title` "Perplexity", `og:url` the origin). A parser that
+    believed them would emit the same "Perplexity" row for every URL, so
+    `extract_og_meta()` output is used only when it is NOT that default.
+  - `GET /rest/discover/feed?limit=N&offset=K&topic=top` is the Discover
+    listing (20 per call, paged by `offset`). Other topic slugs from
+    `/rest/discover/topics` (tech, finance, arts, sports, entertainment)
+    returned zero items for an anonymous visitor on 2026-09-30.
 
-**What this DOES confirm**: perplexity.ai fronts at least some requests
-with a Cloudflare managed challenge, and this family's generic detector
-already catches it (exit `3`, not `4`). **What this does NOT confirm**:
-whether `playwright_scraper.py`'s own headless request (a different
-client than the browser-rendering tool used here) gets the same
-treatment, whether it ever clears on its own without solving anything (a
-"managed" challenge sometimes passes silently for a client Cloudflare
-trusts), or any selector below — this was a block page, not a results
-page, so the actual parsing logic is exactly as unverified as before.
-**The first real run of this repo's own engines against this site still
-has to come from a human's own terminal** (outside any tool-mediated
-shell), exactly as it did for lidl.com/skyscanner.com/stockx.com before
-those files' selectors could be trusted — see `TESTING.md` step 2 for
-what that run needs to check now that a block is a live, confirmed
-possibility and not just a theoretical exit code.
+Extraction order, most trustworthy first:
 
-What IS confirmed, from `robots.txt`, the sitemap, and third-party/
-first-party writeups (see README for the full source list):
-
-  - Perplexity Pages are real, public, wiki-style articles at
-    `https://www.perplexity.ai/page/{slug}-{22-char-id}` — NOT blocked by
-    `robots.txt` (only `/search*`, `/search/new`, and a few onboarding
-    paths are disallowed; `/page/...` is not on that list).
-  - A Page has: a title, section headings, images, body text, a sources/
-    citations list ("links to the resources used in the preparation of
-    the material" — Perplexity's own announcement blog's wording), a
-    page-view count, a follow-up-question count, and author/creator
-    attribution. An interactive "Ask AI" box is also present but is a
-    LIVE feature, not static content — deliberately not scraped by this
-    tool (see README's scope section).
-  - **Confirmed architectural fact, not a guess**: Pages have NO site-
-    search mechanism analogous to lidl/skyscanner/stockx's query-based
-    listings. `robots.txt` explicitly disallows `/*?*q=` and `/search*`
-    for every crawler, and no `?q=`-style endpoint against Perplexity
-    itself surfaces Pages — they're reachable only via a specific URL
-    (an external search engine's result, or a shared link). This is why
-    this repo's engines take `--url` / `--urls-file` instead of the
-    sibling repos' `--query` — a genuine, documented divergence
-    (CLAUDE.md §1), not a silent one.
-
-Everything else below (selectors, JSON-LD shape, OG-meta shape, the exact
-DOM structure of the sources list and the view/follow-up counters) is an
-UNCONFIRMED best-effort guess, laid out in priority order the same way
-every sibling parser is — embedded-data-first, DOM fallback last — so a
-future real capture can confirm or replace each path without restructuring
-the file:
-
-  1. `extract_json_ld()` — generic schema.org lookup (`Article` /
-     `CreativeWork` / `WebPage`). Reused near-verbatim from lidl_parser.py
-     (this part of that file carries no lidl-specific knowledge at all —
-     it is a generic `<script type="application/ld+json">` reader).
-     UNCONFIRMED whether perplexity.ai emits any JSON-LD on a Page at all.
-  2. `extract_og_meta()` — Open Graph / Twitter Card `<meta>` tags
-     (`og:title`, `og:description`, `og:image`, `article:author` if
-     present, `<link rel="canonical">`). This is the one path with a
-     genuine reason to expect it works even against a client-rendered
-     SPA shell: OG tags exist specifically so link-preview bots (Slack,
-     Twitter, iMessage) get a title/image without running JS, and a
-     product built around one-click sharing (confirmed real Pages
-     feature) has a concrete incentive to server-render them. Still
-     UNCONFIRMED for THIS site specifically — no real capture exists.
-  3. DOM fallback (`_parse_page_from_dom`) — best-effort selectors for
-     the rendered article body: heading, byline, sources list, the two
-     engagement counters. Marked `# TODO: verify live` throughout.
-
-All paths feed the same `Product` shape from `output_writer.py`.
+  1. `parse_article_json()` — the `/rest/article/` payload. Primary.
+  2. `_parse_page_from_dom()` — the rendered HTML: the article title is
+     the first `<h2>` (there is no `<h1>`), section titles are the rest.
+     Much thinner (no counters, no sources); used only when the API
+     payload could not be fetched.
 """
 from __future__ import annotations
 
@@ -110,7 +54,7 @@ import logging
 import re
 from dataclasses import dataclass
 from typing import Any, List, Optional
-from urllib.parse import urlparse
+from urllib.parse import quote, urlparse
 
 from bs4 import BeautifulSoup
 
@@ -120,414 +64,321 @@ log = logging.getLogger("page_parser")
 
 BASE_URL = "https://www.perplexity.ai"
 SOURCE = "perplexity.ai"
+DISCOVER_URL = f"{BASE_URL}/discover"
 
-MIN_CARD_MATCHES = 1  # per family invariant (CLAUDE.md §5) — but unlike a search-results
-                       # grid, a Page URL is either the one article or nothing; there is no
-                       # "did enough cards render" ambiguity to guard against here, so this
-                       # constant exists for signature parity with the engines' readiness-wait
-                       # helper, not because more than one match is ever expected on this site.
+# The app's own query suffix on every /rest/ call, copied from the live
+# requests. The endpoints answered identically without it in testing, but
+# matching the real client is the cheaper assumption.
+_REST_SUFFIX = "version=2.18&source=default"
 
-# REAL, live-captured incident (2026-09-21, via a browser-rendering tool —
-# see module docstring and TESTING.md): a fresh visit to a real
-# `/page/{slug}-{id}` URL got served Cloudflare's own "managed challenge"
-# interstitial (`cType: 'managed'`, Ray ID `a3e80852cfb8ae37`) instead of
-# any Page content — confirmed on two separate attempts against two
-# different Page URLs, not a one-off. `captcha_solver.
-# GENERIC_BOT_CHALLENGE_MARKERS` already catches this via its generic
-# `"cf-turnstile"` / `"challenges.cloudflare.com"` /
-# `"cdn-cgi/challenge-platform"` strings (confirmed: `detect_from_html()`
-# on the actual captured HTML returns `True`) — the markers below are
-# added anyway, as durable, site-specific corroboration of the SAME
-# incident, not a replacement for the generic check, mirroring
-# skyscanner-scraper's PerimeterX precedent:
-#   - `cf-chl-widget` — the id prefix Cloudflare's own challenge form uses
-#     for its hidden Turnstile response field on THIS site's challenge
-#     page (`id="cf-chl-widget-qblbv_response"`).
-#   - `_cf_chl_opt` — the inline JS object Cloudflare's challenge-platform
-#     script sets on the page (`window._cf_chl_opt = {cType: 'managed', ...}`).
-# What this incident does NOT confirm: any selector elsewhere in this file
-# (`# TODO: verify live`) — this was a block page, not a results page.
-# `captcha_solver.py`'s own `_UNSUPPORTED_VENDOR_MARKERS` already lists a
-# bare Cloudflare managed challenge as a vendor with no automated solve
-# path (pending confirmation, per that file's comment) — this incident is
-# real-world corroboration of exactly that case, not yet acted on here
-# since `captcha_solver.py` is a family-shared module (CLAUDE.md §7) and a
-# cross-cutting change to it deserves a conscious, family-wide decision
-# rather than a one-repo edit.
+MIN_CARD_MATCHES = 1  # one URL is one article (CLAUDE.md §5 names the constant; there is no grid)
+
+# Cloudflare's managed challenge, captured live 2026-09-21
+# (tests/fixtures/perplexity_cloudflare_block_real.html). The generic
+# captcha_solver markers catch it too; these two are the site-specific
+# corroboration.
 BOT_CHALLENGE_MARKERS: tuple = (
     "cf-chl-widget",
     "_cf_chl_opt",
 )
 
-# Confirmed real from robots.txt: these path prefixes are explicitly
-# disallowed for every crawler. Not used to block a request this tool
-# makes (a human-directed --url is not a crawl), but `is_disallowed_path()`
-# below lets the CLI warn a caller who points --url at one of these rather
-# than silently trying and failing.
+# robots.txt disallows these for every crawler; the CLI refuses them.
 _DISALLOWED_PATH_PREFIXES = (
-    "/search",           # covers /search, /search/new, /search?*/
+    "/search",
     "/marketing/prerelease/",
     "/onboarding/",
     "/join/",
 )
 
-_PAGE_ID_RE = re.compile(r"^(?P<slug>.*)-(?P<id>[A-Za-z0-9_-]{18,24})$")
+ID_LENGTH = 22
+_UUID_RE = re.compile(r"^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$")
+_ID_CHARS_RE = re.compile(r"^[A-Za-z0-9._-]+$")
+
+# A page the app actually served is built from its own asset host; a
+# Cloudflare interstitial is not (live 2026-09-30: 195 references on each
+# real article, 0 on both captured challenge pages). The DOM fallback
+# refuses to read any page without it — a local headless run otherwise
+# turned the challenge's own "Performing security verification" heading
+# into an article title and reported success.
+APP_ASSET_MARKER = "pplx-next-static-public"
+_MIN_APP_ASSET_HITS = 3
+
+
+def is_app_page(html: str) -> bool:
+    return (html or "").count(APP_ASSET_MARKER) >= _MIN_APP_ASSET_HITS
+
+
+# Site-default OG values (identical on every page, live 2026-09-30).
+_DEFAULT_OG_TITLES = {"perplexity"}
+# Headings the site renders around every article, never article content.
+_CHROME_HEADINGS = {"cookie policy"}
 
 
 # --------------------------------------------------------------------------- #
 # URL helpers
 # --------------------------------------------------------------------------- #
 def is_page_url(url: str) -> bool:
-    return urlparse(url).path.startswith("/page/")
+    """A URL this scraper can turn into an article: `/page/...` or
+    `/discover/{topic}/...` on perplexity.ai."""
+    return article_ref(url)[1] is not None
 
 
 def is_disallowed_path(url: str) -> bool:
-    """True if `url`'s path matches a robots.txt-disallowed prefix — used
-    by the CLI to refuse (EXIT_BAD_USAGE) a --url/--urls-file entry that
-    isn't actually a Page, rather than silently sending a request this
-    tool has no business making."""
     path = urlparse(url).path
     return any(path.startswith(prefix) for prefix in _DISALLOWED_PATH_PREFIXES)
 
 
-def parse_page_ref(url: str) -> tuple:
-    """Splits a Page URL's `/page/{slug}-{id}` path segment into
-    `(slug, page_id)`. The id is confirmed real-shaped (22 characters,
-    mixed-case alphanumeric plus `_`/`-`, from the one real example URL
-    found via WebSearch during research — see README) but the exact
-    length is UNCONFIRMED as a hard invariant, so the regex accepts a
-    range (18-24) rather than an exact count. Returns `(None, None)` if
-    the path doesn't look like a Page URL at all."""
-    path = urlparse(url).path
-    if not path.startswith("/page/"):
+def split_slug_id(segment: str) -> tuple:
+    """`some-title-heYaECNnQuaM0AZ0QSWjaw` → (`some-title`, `heYaECNnQuaM0AZ0QSWjaw`).
+    The id is the last 22 characters after a `-`; it can itself contain
+    `-`, `.` and `_`, so it is cut by length, never by splitting on `-`."""
+    segment = (segment or "").strip("/")
+    if len(segment) > ID_LENGTH and segment[-ID_LENGTH - 1] == "-":
+        ident = segment[-ID_LENGTH:]
+        if _ID_CHARS_RE.match(ident):
+            return segment[: -ID_LENGTH - 1], ident
+    return segment or None, None
+
+
+def article_ref(url: str) -> tuple:
+    """(topic, ref) for an article URL, or (None, None). `ref` is what
+    `/rest/article/{ref}` accepts: the full slug-with-id, or a backend
+    uuid (what an old `/page/` link is rewritten to)."""
+    parts = urlparse(url)
+    if parts.netloc and not parts.netloc.endswith("perplexity.ai"):
         return None, None
-    segment = path[len("/page/"):].strip("/")
-    m = _PAGE_ID_RE.match(segment)
-    if not m:
-        return segment or None, None
-    return m.group("slug"), m.group("id")
+    segs = [s for s in parts.path.split("/") if s]
+    if len(segs) == 2 and segs[0] == "page":
+        return None, segs[1]
+    if len(segs) == 3 and segs[0] == "discover":
+        return segs[1], segs[2]
+    return None, None
+
+
+def parse_page_ref(url: str) -> tuple:
+    """(slug, id) from an article URL; a uuid ref has no id."""
+    _topic, ref = article_ref(url)
+    if not ref or _UUID_RE.match(ref):
+        return None, None
+    return split_slug_id(ref)
+
+
+def article_api_url(ref: str) -> str:
+    return f"{BASE_URL}/rest/article/{quote(ref, safe='._-')}?{_REST_SUFFIX}"
+
+
+def discover_feed_api_url(topic: str, *, offset: int, limit: int = 20) -> str:
+    return f"{BASE_URL}/rest/discover/feed?limit={limit}&offset={offset}&topic={quote(topic)}&{_REST_SUFFIX}"
+
+
+def discover_article_url(topic: str, slug: str) -> str:
+    return f"{BASE_URL}/discover/{topic}/{slug}"
 
 
 # --------------------------------------------------------------------------- #
-# sku — a Page's own id is the stable part of its URL; an author can edit
-# the slug (title-derived, so a title edit could change it) without
-# changing the id, exactly the reasoning lidl-scraper's make_sku() uses for
-# preferring a site-native id over a URL fingerprint. Falls back to a
-# deterministic fingerprint of the full URL (NEVER random/run-scoped) only
-# when no id-shaped segment could be split out, so diff_runs.py still sees
-# a stable sku across two runs whenever possible.
+# sku — the 22-character id, which survives a slug change (see Product).
+# A deterministic URL fingerprint is the last resort, never a random one.
 # --------------------------------------------------------------------------- #
 def make_sku(*, page_id: Optional[str], url: Optional[str]) -> str:
     if page_id:
         return f"perplexity-{page_id}"
-    basis = url or ""
-    digest = hashlib.sha1(basis.encode("utf-8")).hexdigest()[:16]
+    digest = hashlib.sha1((url or "").encode("utf-8")).hexdigest()[:16]
     return f"perplexity-url-{digest}"
 
 
 # --------------------------------------------------------------------------- #
-# Path 1: generic schema.org JSON-LD lookup — reused near-verbatim from
-# lidl_parser.py's extract_json_ld(); this function itself carries no
-# site-specific knowledge, only the node-shape functions below it do.
+# Path 1: the /rest/article/ payload
 # --------------------------------------------------------------------------- #
-def extract_json_ld(html: str) -> List[dict]:
-    """Returns every parseable `application/ld+json` blob on the page, with
-    `@graph` arrays flattened into the top-level list."""
-    soup = BeautifulSoup(html, "html.parser")
-    blobs: List[dict] = []
-    for tag in soup.find_all("script", type="application/ld+json"):
-        if not tag.string:
-            continue
+def _entry_text(entry: dict) -> dict:
+    raw = entry.get("text")
+    if isinstance(raw, dict):
+        return raw
+    if isinstance(raw, str) and raw.startswith("{"):
         try:
-            data = json.loads(tag.string)
-        except (ValueError, TypeError):
-            continue
-        candidates = data if isinstance(data, list) else [data]
-        for item in candidates:
-            if not isinstance(item, dict):
-                continue
-            if isinstance(item.get("@graph"), list):
-                blobs.extend(g for g in item["@graph"] if isinstance(g, dict))
-            else:
-                blobs.append(item)
-    return blobs
+            data = json.loads(raw)
+        except ValueError:
+            return {}
+        return data if isinstance(data, dict) else {}
+    return {}
 
 
-def _schema_type(node: dict) -> str:
-    t = node.get("@type")
-    if isinstance(t, list):
-        return "|".join(str(x) for x in t)
-    return str(t or "")
-
-
-def _find_article_node(blobs: List[dict]) -> Optional[dict]:
-    """# TODO: verify live — UNCONFIRMED whether perplexity.ai emits any
-    JSON-LD on a Page at all, let alone which schema.org type. Tries the
-    obvious content-page candidates in order of specificity."""
-    for wanted in ("Article", "CreativeWork", "WebPage"):
-        for node in blobs:
-            if wanted in _schema_type(node):
-                return node
+def _as_int(value: Any) -> Optional[int]:
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and value.is_integer():
+        return int(value)
     return None
 
 
-def _json_ld_node_to_product(node: dict, *, source_url: str) -> Optional[Product]:
-    title = node.get("headline") or node.get("name")
-    if not title:
-        return None  # nothing usable — skip rather than fabricate a row
+def _collect_sources(entries: List[dict]) -> List[dict]:
+    seen, sources = set(), []
 
-    author = node.get("author")
-    if isinstance(author, dict):
-        author = author.get("name")
-    elif isinstance(author, list):
-        author = next((a.get("name") for a in author if isinstance(a, dict) and a.get("name")), None)
+    def add(result: Any) -> None:
+        if not isinstance(result, dict):
+            return
+        url = result.get("url")
+        if not isinstance(url, str) or not url.startswith("http") or url in seen:
+            return
+        seen.add(url)
+        sources.append({"url": url, "title": result.get("name") or None})
 
-    image = node.get("image")
-    if isinstance(image, list):
-        image = next((item for item in image if isinstance(item, (str, dict))), None)
-    if isinstance(image, dict):
-        image = image.get("url") or image.get("contentUrl")
-
-    url = node.get("url") or source_url
-    slug, page_id = parse_page_ref(url)
-
-    return Product(
-        sku=make_sku(page_id=page_id, url=url),
-        source=SOURCE,
-        category=None,       # not applicable — see output_writer.Product docstring
-        title=title,
-        brand=None,           # not applicable — see output_writer.Product docstring
-        price=None,           # not applicable — see output_writer.Product docstring
-        currency=None,        # not applicable — see output_writer.Product docstring
-        price_source=None,    # not applicable — see output_writer.Product docstring
-        product_url=url,
-        image_url=image,
-        scraped_at=_now_iso(),
-        author=author,
-        view_count=None,                    # TODO: verify live — not present in schema.org Article
-        follow_up_question_count=None,      # TODO: verify live — Perplexity-specific, not standard schema.org
-        source_count=None,                  # TODO: verify live
-        sources_json=None,                  # TODO: verify live
-        section_count=None,                 # TODO: verify live
-        word_count=_word_count(node.get("articleBody")) if isinstance(node.get("articleBody"), str) else None,
-        slug=slug,
-        published_at=node.get("datePublished") or node.get("dateModified"),
-    )
-
-
-# --------------------------------------------------------------------------- #
-# Path 2: Open Graph / Twitter Card meta tags — see module docstring for
-# why this has a genuine (if unconfirmed) reason to work even against a
-# client-rendered shell.
-# --------------------------------------------------------------------------- #
-def extract_og_meta(html: str) -> dict:
-    soup = BeautifulSoup(html, "html.parser")
-    out: dict = {}
-    for prop, key in (
-        ("og:title", "title"),
-        ("og:description", "description"),
-        ("og:image", "image"),
-        ("og:url", "url"),
-        ("article:author", "author"),
-        ("article:published_time", "published_at"),
-    ):
-        tag = soup.find("meta", attrs={"property": prop}) or soup.find("meta", attrs={"name": prop})
-        if tag and tag.get("content"):
-            out[key] = tag["content"].strip()
-    if "title" not in out:
-        tag = soup.find("meta", attrs={"name": "twitter:title"})
-        if tag and tag.get("content"):
-            out["title"] = tag["content"].strip()
-    canonical = soup.find("link", rel="canonical")
-    if canonical and canonical.get("href"):
-        out.setdefault("url", canonical["href"].strip())
-    return out
-
-
-def _og_meta_to_product(meta: dict, *, source_url: str) -> Optional[Product]:
-    title = meta.get("title")
-    if not title:
-        return None  # no usable title anywhere — skip rather than fabricate a row
-
-    url = meta.get("url") or source_url
-    slug, page_id = parse_page_ref(url)
-
-    return Product(
-        sku=make_sku(page_id=page_id, url=url),
-        source=SOURCE,
-        category=None,
-        title=title,
-        brand=None,
-        price=None,
-        currency=None,
-        price_source=None,
-        product_url=url,
-        image_url=meta.get("image"),
-        scraped_at=_now_iso(),
-        author=meta.get("author"),          # TODO: verify live — article:author is UNCONFIRMED to be set on a real Page
-        view_count=None,                    # TODO: verify live — meta tags don't carry engagement counters
-        follow_up_question_count=None,      # TODO: verify live
-        source_count=None,                  # TODO: verify live
-        sources_json=None,                  # TODO: verify live
-        section_count=None,                 # TODO: verify live
-        word_count=None,
-        slug=slug,
-        published_at=meta.get("published_at"),
-    )
-
-
-# --------------------------------------------------------------------------- #
-# Path 3: DOM fallback — rendered article body. Every selector here is a
-# best-effort guess (# TODO: verify live) since no real capture of a
-# rendered Page exists yet. Several candidate selectors are tried per
-# field, same defensive pattern as lidl_parser.py's own DOM fallback,
-# precisely because the real markup is unknown.
-# --------------------------------------------------------------------------- #
-_TITLE_SELECTORS = ("h1", '[data-testid="page-title"]', "article h1", ".page-title")
-_AUTHOR_SELECTORS = (
-    '[data-testid="page-author"]', '[class*="author" i]', '[class*="byline" i]', ".creator-name",
-)
-_SOURCES_CONTAINER_SELECTORS = (
-    '[data-testid="sources-list"]', '[class*="sources" i]', '[class*="citations" i]', "#sources",
-)
-_VIEW_COUNT_SELECTORS = ('[data-testid="view-count"]', '[aria-label*="view" i]', '[class*="view-count" i]')
-_FOLLOWUP_COUNT_SELECTORS = (
-    '[data-testid="followup-count"]', '[aria-label*="question" i]', '[class*="followup" i]',
-)
-_SECTION_HEADING_SELECTORS = ("article h2", "article h3", ".page-content h2", ".page-content h3")
-_BODY_SELECTORS = ("article", '[data-testid="page-content"]', ".page-content", "main")
-_IMAGE_SELECTORS = ("article img", '[data-testid="page-content"] img', "main img")
-
-_COUNT_RE = re.compile(r"([\d,.]+)\s*([kKmM])?")
-
-
-def _parse_count(text: Optional[str]) -> Optional[int]:
-    """# TODO: verify live — UNCONFIRMED whether the real UI shows a raw
-    number or an abbreviated one ("1.2k views"); handles both so this
-    doesn't silently return None the moment a real capture shows the
-    abbreviated form."""
-    if not text:
-        return None
-    m = _COUNT_RE.search(text.replace(" ", ""))
-    if not m:
-        return None
-    try:
-        value = float(m.group(1).replace(",", ""))
-    except ValueError:
-        return None
-    suffix = (m.group(2) or "").lower()
-    if suffix == "k":
-        value *= 1_000
-    elif suffix == "m":
-        value *= 1_000_000
-    return int(value)
-
-
-def count_result_cards(html: str) -> int:
-    """Used by captcha_solver.solve_when_blocked — cheap presence check, no
-    readiness wait. Unlike a search-results grid, a Page URL has at most
-    ONE "card" (the article itself), so this returns 1 if a title-shaped
-    heading rendered, 0 otherwise — enough for solve_when_blocked's own
-    `count_product_links(html) > 0` skip-if-already-rendered check."""
-    soup = BeautifulSoup(html, "html.parser")
-    return 1 if _first_text(soup, _TITLE_SELECTORS) else 0
-
-
-def _first_text(soup_or_tag, selectors) -> Optional[str]:
-    for sel in selectors:
-        found = soup_or_tag.select_one(sel)
-        if found:
-            text = found.get_text(strip=True)
-            if text:
-                return text
-    return None
+    for entry in entries:
+        for result in _entry_text(entry).get("web_results") or []:
+            add(result)
+        for result in (entry.get("article_info") or {}).get("cited_search_results") or []:
+            add(result)
+    return sources
 
 
 def _word_count(text: Optional[str]) -> Optional[int]:
     if not text:
         return None
-    words = text.split()
-    return len(words) or None
+    return len(text.split()) or None
 
 
-def _extract_sources(soup: BeautifulSoup) -> List[dict]:
-    """# TODO: verify live — best-effort: looks for a container matching
-    one of `_SOURCES_CONTAINER_SELECTORS`, then every link inside it.
-    Returns a list of `{"url": ..., "title": ...}` dicts, JSON-encoded by
-    the caller into `Product.sources_json` (see output_writer.py's
-    docstring for why that field is a string, not a native list)."""
-    for sel in _SOURCES_CONTAINER_SELECTORS:
-        container = soup.select_one(sel)
-        if container:
-            sources = []
-            for a in container.select("a[href]"):
-                href = a.get("href")
-                if not href:
-                    continue
-                sources.append({"url": href, "title": a.get_text(strip=True) or None})
-            if sources:
-                return sources
-    return []
-
-
-def _parse_page_from_dom(html: str, *, source_url: str) -> Optional[Product]:
-    soup = BeautifulSoup(html, "html.parser")
-
-    title = _first_text(soup, _TITLE_SELECTORS)
+def parse_article_json(data: Any, *, url: str) -> Optional[Product]:
+    """One Product from a `/rest/article/` payload, or None when the
+    payload is not a successful article (a 400's `{"detail": ...}`, an
+    empty `entries`, a missing title)."""
+    if not isinstance(data, dict) or data.get("status") != "success":
+        return None
+    entries = [e for e in data.get("entries") or [] if isinstance(e, dict)]
+    if not entries:
+        return None
+    head = entries[0]
+    info = head.get("article_info") or {}
+    title = info.get("title") or head.get("thread_title")
     if not title:
-        return None  # nothing usable rendered — skip rather than fabricate a row
+        return None
 
-    author = _first_text(soup, _AUTHOR_SELECTORS)
-
-    view_count = _parse_count(_first_text(soup, _VIEW_COUNT_SELECTORS))
-    follow_up_question_count = _parse_count(_first_text(soup, _FOLLOWUP_COUNT_SELECTORS))
-
-    sources = _extract_sources(soup)
-
-    section_count = 0
-    for sel in _SECTION_HEADING_SELECTORS:
-        matches = soup.select(sel)
-        if matches:
-            section_count = len(matches)
-            break
-
-    body_text = None
-    for sel in _BODY_SELECTORS:
-        body = soup.select_one(sel)
-        if body:
-            body_text = body.get_text(" ", strip=True)
-            break
+    canonical_slug = head.get("thread_url_slug")
+    slug, page_id = split_slug_id(canonical_slug or "")
+    if page_id is None:
+        slug, page_id = parse_page_ref(url)
+    topic, _ref = article_ref(url)
+    if canonical_slug:
+        product_url = discover_article_url(topic, canonical_slug) if topic else f"{BASE_URL}/page/{canonical_slug}"
+    else:
+        product_url = url
 
     image = None
-    for sel in _IMAGE_SELECTORS:
-        img = soup.select_one(sel)
-        if img and (img.get("src") or img.get("data-src")):
-            image = img.get("src") or img.get("data-src")
+    for img in head.get("featured_images") or []:
+        if isinstance(img, dict) and isinstance(img.get("image"), str):
+            image = img["image"]
             break
 
-    slug, page_id = parse_page_ref(source_url)
+    social = head.get("social_info") or {}
+    sources = _collect_sources(entries)
+    words = sum(_word_count(_entry_text(e).get("answer")) or 0 for e in entries)
 
     return Product(
-        sku=make_sku(page_id=page_id, url=source_url),
+        sku=make_sku(page_id=page_id, url=product_url),
         source=SOURCE,
-        category=None,
+        category=topic,
         title=title,
         brand=None,
         price=None,
         currency=None,
         price_source=None,
-        product_url=source_url,
+        product_url=product_url,
         image_url=image,
         scraped_at=_now_iso(),
-        author=author,
-        view_count=view_count,
-        follow_up_question_count=follow_up_question_count,
-        source_count=len(sources) or None,
-        sources_json=json.dumps(sources, ensure_ascii=False) if sources else None,
-        section_count=section_count or None,
-        word_count=_word_count(body_text),
-        slug=slug,
-        published_at=None,  # TODO: verify live — no confirmed DOM selector for a publish date
+        author=head.get("author_username"),
+        view_count=_as_int(social.get("view_count")),
+        like_count=_as_int(social.get("like_count")),
+        fork_count=_as_int(social.get("fork_count")),
+        source_count=len(sources),
+        sources_json=json.dumps(sources, ensure_ascii=False),
+        section_count=len(entries),
+        word_count=words or None,
+        slug=canonical_slug or (f"{slug}-{page_id}" if slug and page_id else slug),
+        summary=info.get("summary") or None,
+        read_time_minutes=_as_int(info.get("read_time")),
+        published_at=info.get("first_published") or None,
+        updated_at=head.get("updated_datetime") or None,
+    )
+
+
+def parse_discover_feed(data: Any, *, topic: str) -> tuple:
+    """(article URLs, has_more) from one `/rest/discover/feed` page."""
+    if not isinstance(data, dict):
+        return [], False
+    urls = []
+    for item in data.get("items") or []:
+        if not isinstance(item, dict):
+            continue
+        slug = item.get("slug")
+        if isinstance(slug, str) and slug:
+            urls.append(discover_article_url(topic, slug))
+    return urls, bool(data.get("next_token"))
+
+
+# --------------------------------------------------------------------------- #
+# Path 2: rendered-HTML fallback (see module docstring for what it lacks)
+# --------------------------------------------------------------------------- #
+def extract_og_meta(html: str) -> dict:
+    """Open Graph values, EXCLUDING the site-wide defaults every page
+    carries — an empty dict on today's site."""
+    soup = BeautifulSoup(html, "html.parser")
+    out: dict = {}
+    for prop, key in (("og:title", "title"), ("og:image", "image"), ("og:url", "url")):
+        tag = soup.find("meta", attrs={"property": prop}) or soup.find("meta", attrs={"name": prop})
+        if tag and tag.get("content"):
+            out[key] = tag["content"].strip()
+    if (out.get("title") or "").strip().lower() in _DEFAULT_OG_TITLES:
+        return {}
+    if out.get("url") and urlparse(out["url"]).path in ("", "/"):
+        out.pop("url")
+    return out
+
+
+def _headings(soup: BeautifulSoup) -> List[str]:
+    heads = []
+    for h in soup.select("h2"):
+        text = h.get_text(" ", strip=True)
+        if text and text.lower() not in _CHROME_HEADINGS:
+            heads.append(text)
+    return heads
+
+
+def count_result_cards(html: str) -> int:
+    """1 if an article heading rendered, else 0 — what
+    captcha_solver.solve_when_blocked uses to skip a solve on a page whose
+    content is already there."""
+    if not is_app_page(html):
+        return 0
+    return 1 if _headings(BeautifulSoup(html, "html.parser")) else 0
+
+
+def _parse_page_from_dom(html: str, *, source_url: str) -> Optional[Product]:
+    if not is_app_page(html):
+        return None
+    soup = BeautifulSoup(html, "html.parser")
+    heads = _headings(soup)
+    og = extract_og_meta(html)
+    title = og.get("title") or (heads[0] if heads else None)
+    if not title:
+        return None
+    topic, _ref = article_ref(source_url)
+    slug, page_id = parse_page_ref(source_url)
+    return Product(
+        sku=make_sku(page_id=page_id, url=source_url),
+        source=SOURCE,
+        category=topic,
+        title=title,
+        brand=None,
+        price=None,
+        currency=None,
+        price_source=None,
+        product_url=og.get("url") or source_url,
+        image_url=og.get("image"),
+        scraped_at=_now_iso(),
+        # The first <h2> is the article title itself; the rest are its
+        # sections (live: 15 h2 vs 14 API entries, 5 vs 4).
+        section_count=(len(heads) - 1) if not og.get("title") and len(heads) > 1 else None,
+        slug=f"{slug}-{page_id}" if slug and page_id else slug,
     )
 
 
@@ -537,32 +388,19 @@ def _parse_page_from_dom(html: str, *, source_url: str) -> Optional[Product]:
 @dataclass
 class PageResult:
     products: List[Product]
-    source_used: str  # "json_ld" | "og_meta" | "dom" | "none"
+    source_used: str  # "api" | "dom" | "none"
 
 
-def parse_page(html: str, *, url: str) -> PageResult:
-    """One Page URL yields zero or one Product — `products` is still a
-    list (never a bare `Optional[Product]`) purely so the engines' shared
-    `merge_pages()`/round-loop code (written once, for all four family
-    repos) doesn't need a special case for this repo's 1-or-0 cardinality
-    versus the sibling repos' many-per-round cardinality."""
-    json_ld_blobs = extract_json_ld(html)
-    article_node = _find_article_node(json_ld_blobs)
-    if article_node:
-        product = _json_ld_node_to_product(article_node, source_url=url)
+def parse_page(html: str, *, url: str, article_json: Any = None) -> PageResult:
+    """Zero or one Product for one URL. `article_json` is the engine's
+    `/rest/article/` payload (already decoded), when it got one."""
+    if article_json is not None:
+        product = parse_article_json(article_json, url=url)
         if product is not None:
-            return PageResult(products=[product], source_used="json_ld")
-
-    og_meta = extract_og_meta(html)
-    if og_meta:
-        product = _og_meta_to_product(og_meta, source_url=url)
-        if product is not None:
-            return PageResult(products=[product], source_used="og_meta")
-
-    dom_product = _parse_page_from_dom(html, source_url=url)
-    if dom_product is not None:
-        return PageResult(products=[dom_product], source_used="dom")
-
+            return PageResult(products=[product], source_used="api")
+    product = _parse_page_from_dom(html or "", source_url=url)
+    if product is not None:
+        return PageResult(products=[product], source_used="dom")
     return PageResult(products=[], source_used="none")
 
 
@@ -572,19 +410,10 @@ def _now_iso() -> str:
 
 
 def safe_parse_page(html: str, **kwargs) -> PageResult:
-    """Public engine entry point. Wraps `parse_page` so an unexpected
-    exception INSIDE parsing degrades that ONE url to "found nothing here"
-    instead of propagating out of an engine's --urls-file loop and
-    crashing the whole run — which would discard every Page already
-    collected from earlier URLs in the same batch. Same family-wide
-    invariant (CLAUDE.md §6/§10) as lidl_parser.safe_parse_search_results,
-    skyscanner-scraper's flight_parser.safe_parse_search_results, and
-    stockx-scraper's per-engine safe_parse closures: one bad page is a
-    reason to log loudly and move on, not to lose everything gathered so
-    far. All three engines call this instead of `parse_page` directly.
-    """
+    """Engine entry point: a parse exception degrades this ONE url to
+    "nothing found" instead of crashing the batch (CLAUDE.md §6/§10)."""
     try:
         return parse_page(html, **kwargs)
-    except Exception as exc:  # noqa: BLE001 — see docstring above
-        log.error("A page's HTML failed to parse — treating it as empty, not crashing: %s", exc)
+    except Exception as exc:  # noqa: BLE001
+        log.error("A page failed to parse — treating it as empty, not crashing: %s", exc)
         return PageResult(products=[], source_used="none")

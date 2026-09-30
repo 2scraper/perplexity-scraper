@@ -8,9 +8,10 @@
 ![engines](https://img.shields.io/badge/engines-Playwright%20%7C%20Selenium%20%7C%20Puppeteer-informational)
 ![local-first](https://img.shields.io/badge/local--first-yes-success)
 
-A [Perplexity Pages](https://www.perplexity.ai/) scraper: a Page URL (or a
-file of them) in, one row of title/author/sources/engagement-counter data
-out per Page. Three engines (Playwright primary, Selenium and
+A [Perplexity](https://www.perplexity.ai/) article scraper: classic Pages
+(`/page/...`) and Discover articles (`/discover/{topic}/...`) in — one URL,
+a file of them, or the Discover feed itself — one row of
+title/author/summary/sources/engagement data out per article. Three engines (Playwright primary, Selenium and
 Puppeteer/pyppeteer for parity), JSON or CSV output, an open, documented
 `Product` schema. Part of the [2scraper](https://github.com/2scraper)
 family — same output contract, exit codes, and family modules as
@@ -18,85 +19,48 @@ family — same output contract, exit codes, and family modules as
 
 ## Read this before trusting a run
 
-**A live incident now exists: perplexity.ai served a real Cloudflare
-managed challenge, twice, to a real browser.** On 2026-09-21, two
-separate, freshly-opened attempts against two different real
-`/page/{slug}-{id}` URLs both got redirected to the bare origin and
-served the identical Cloudflare "managed challenge" interstitial
-(`cType: 'managed'`, Ray ID `a3e80852cfb8ae37`) instead of any Page
-content — not a one-off, not URL-specific. `captcha_solver.
-detect_from_html()` correctly flags the captured page as blocked (exit
-`3`), and `page_parser.BOT_CHALLENGE_MARKERS` now carries two
-site-specific corroborating markers alongside the generic ones — see
-`CHANGELOG.md`'s dated entry and `page_parser.py`'s module docstring for
-the full incident, and `tests/fixtures/perplexity_cloudflare_block_real.html`
-for the captured page itself.
+**Live-verified 2026-09-30.** Playwright and Puppeteer, connected to a US
+2Captcha Scraping Browser API profile over `--cdp-endpoint`, scraped real
+articles end to end: a 2024 classic Page, current Discover articles, a
+25-article `--discover top` run (25/25 rows, every applicable column
+filled), and a dead URL correctly reported as not found. `status=complete`,
+exit `0` on every run.
 
-**This confirms the site can block a request; it does NOT yet confirm
-what this repo's own scraper engines get when they run against it** —
-the capture above came from a full browser-rendering tool, not from
-`playwright_scraper.py`/`selenium_scraper.py`/`puppeteer_scraper.py`
-themselves, and a "managed" challenge sometimes clears silently for a
-client Cloudflare trusts, which may or may not include a real headless
-Playwright run. Every sibling repo in this family started with zero live
-data and got corrected by a real capture (see `lidl-scraper`'s own README
-history for what that looked like); this repo now has one confirmed data
-point — a block — but still no confirmed successful Page render. What's
-below is either confirmed from public, static sources, confirmed from the
-live incident above, or explicitly marked as an unconfirmed guess —
-nothing in between, per this family's honesty rule (`CLAUDE.md` §15).
+What the live capture established (details in `page_parser.py`):
 
-**Confirmed** (from `robots.txt`, the sitemap, and third-party/first-party
-writeups — no browser needed):
+- **The data comes from the site's own JSON API, not the HTML.** Every
+  article page calls `GET /rest/article/{slug-or-uuid}`, which returns the
+  whole article: title, summary, author, publish/update times, read time,
+  view/like/fork counters, every section's text and sources, the hero
+  image. The engines open the article page (so the browser holds the
+  site's cookies) and call that same endpoint with `fetch()` from inside
+  the page.
+- **The HTML is nearly empty of data.** No JSON-LD, and the Open Graph tags
+  are the site-wide defaults on every page (`og:title` "Perplexity"). The
+  HTML fallback reads only the title and section headings, and refuses
+  any page not built from the app's own assets — a Cloudflare interstitial
+  once came out as an article titled "Performing security verification".
+- **Both URL kinds work.** Old `/page/{slug}-{id}` links still resolve
+  (the app rewrites them to `/page/{uuid}`); new articles live at
+  `/discover/{topic}/{slug}-{id}`. The 22-character id is the stable
+  `sku`: it stayed the same when a Page's slug changed. Ids can contain
+  `.` and `_`.
+- **Discover feed**: `/rest/discover/feed?topic=top` pages 20 at a time.
+  The other topics (`tech`, `finance`, `arts`, `sports`, `entertainment`)
+  returned zero items for an anonymous visitor.
+- **Cloudflare blocks a local browser.** Local Chromium from a residential
+  Mac, headless or headful, stayed on a managed challenge (Playwright,
+  Selenium and pyppeteer alike); runs honestly exit `3`. Through a US
+  residential proxy, a headful Selenium Chrome got the page but the API
+  answered 403, so rows came from the HTML only (title and section count).
+  **Use `--cdp-endpoint` for real work.**
 
-- Perplexity Pages are real, public, wiki-style articles at
-  `https://www.perplexity.ai/page/{slug}-{22-char-id}`. `robots.txt`
-  disallows `/*?*q=`, `/search*`, `/search/new`, `/marketing/prerelease/`,
-  `/onboarding/`, `/join/` for every crawler — `/page/...` is **not** on
-  that list.
-- **Pages have no site-search mechanism.** There is no `?q=`-style
-  endpoint against perplexity.ai that surfaces Pages, and `robots.txt`
-  explicitly disallows the shapes that would look like one. This is why
-  this repo's CLI is `--url`/`--urls-file`, not the `--query`/`--category`
-  every sibling repo uses — see `page_parser.py`'s module docstring for
-  the full reasoning. It's a genuine architectural fact about this site,
-  not a missing feature.
-- A Page has a title, section headings, images, body text, a sources/
-  citations list, a view count, a follow-up-question count, and author
-  attribution (Perplexity's own announcement blog for the feature
-  confirms all of these; a live "Ask AI" box is also present but is
-  explicitly out of scope here — see "Known limitations").
+## Recommended setup
 
-**Unconfirmed — best-effort guesses, marked `# TODO: verify live` in
-`page_parser.py`**: the exact DOM selectors for every field above, whether
-the site emits any JSON-LD at all, whether Open Graph meta tags are
-server-rendered for a Page (a reasonable bet — see `page_parser.py` — but
-untested), and `NAV_TIMEOUT_MS`/`READINESS_WAIT_MS`, which are carried
-over unchanged from `lidl-scraper`'s own measured values, not
-independently measured against this site.
-
-Direct HTTP access to perplexity.ai is blocked from every plain-`curl`-
-style automated shell this repo was built in — the first real run of this
-repo's OWN engines still has to come from a human's own terminal, exactly
-as it did for `lidl-scraper`/`skyscanner-scraper`/`stockx-scraper` before
-those repos existed, and now doubly so given the confirmed block above:
-whether `--proxy`/`--cdp-endpoint`/`--fingerprint` are needed by default
-for this site (rather than the "local-first" framing the rest of this
-README uses) is now a real open question, not a hypothetical one. If you
-run this against the real site, please open an issue or PR with what you
-found (matching or not) — `page_parser.py`'s selectors are written to be
-easy to correct in place once a real capture confirms or refutes them.
-
-## Local-first
-
-Like the rest of the family, this does **not** require 2Captcha's paid
-Scraping Browser API to run. The default is an ordinary local headless
-Chromium, no proxy, no key, no account. `--proxy` / `--cdp-endpoint` /
-`--fingerprint` are opt-in power options for volume, a specific exit
-country, or a consistent device identity — carried over here as an
-architectural choice, same as every sibling repo, even though (see above)
-it hasn't been live-measured on *this* site yet — it's unconfirmed whether
-perplexity.ai challenges a plain browser visit at all.
+A 2Captcha Scraping Browser API profile over `--cdp-endpoint` (Playwright
+or Puppeteer). Local runs are still supported and still report correctly,
+but on 2026-09-30 Cloudflare did not let one through from the machine it
+was tested on. Selenium cannot use the Browser API (see "Engines").
 
 ## Install
 
@@ -109,22 +73,25 @@ pip install -r requirements-selenium.txt                                    # ne
 pip install -r requirements-puppeteer.txt                                   # pyppeteer — see its own warning below
 ```
 
-Copy `.env.example` to `.env` — leave it blank for a normal first run (see
-"Local-first" above) and fill in what you use later. `python3 env_config.py`
-shows what was picked up without ever printing a secret.
+Copy `.env.example` to `.env` and set `PERPLEXITY_CDP_ENDPOINT` (see
+"Recommended setup"). `python3 env_config.py` shows what was picked up
+without ever printing a secret.
 
 ## Usage
 
 ```bash
-# a single Page
-python3 playwright_scraper.py --url "https://www.perplexity.ai/page/some-article-AbCdEfGhIjKlMnOpQrStUv" --format json --out results.json
+# one article (a classic Page or a Discover article)
+python3 playwright_scraper.py --url "https://www.perplexity.ai/page/How-to-Generate-VzUTuvQVSIqru3QGvPihlg"
 
-# a batch of Pages, one URL per line in a file
+# the Discover feed, 40 articles, as CSV
+python3 playwright_scraper.py --discover top --max-results 40 --format csv --out discover.csv
+
+# a batch, one URL per line in a file
 python3 playwright_scraper.py --urls-file pages.txt --max-results 20 --dump-html
-
-# with 2Captcha's Scraping Browser API (opt-in — see "Local-first" above)
-python3 playwright_scraper.py --url "https://www.perplexity.ai/page/..." --cdp-endpoint "$PERPLEXITY_CDP_ENDPOINT"
 ```
+
+Put the Scraping Browser API endpoint in `.env` as `PERPLEXITY_CDP_ENDPOINT`
+(see "Recommended setup"); every command above then uses it.
 
 `selenium_scraper.py` and `puppeteer_scraper.py` accept the identical flag
 set and produce the identical output contract — see "Engines" for the two
@@ -132,21 +99,19 @@ places they genuinely can't behave the same as Playwright.
 
 ### Flags
 
-`--url --urls-file --max-results --delay-between-pages --format --out
+`--url --urls-file --discover --max-results --delay-between-pages --format --out
 --retries --retry-delay --proxy --proxy-file --proxy-shuffle
 --proxy-block-retries --twocaptcha-key --captcha-api --solve-captcha
 --min-score --cdp-endpoint --fingerprint --fp-tags --fp-country
 --allow-empty --dump-html --headless/--headful`
 
 Identical across all three engines — a `smoke_test.py` check asserts the
-three parsers' flag sets never drift apart. `--url` takes priority over
-`--urls-file` when both are given. `--max-results` caps how many URLs from
-`--urls-file` are actually fetched this run (there is exactly zero or one
-Product per Page — it does not cap a product count within one page, the
-way it does in the query-based sibling repos). A URL whose path matches
-one of `robots.txt`'s disallowed prefixes is skipped — logged and never
-fetched — rather than attempted; `--url`/`--urls-file` made up entirely of
-disallowed paths is `EXIT_BAD_USAGE`. `--fingerprint`/`--fp-tags`/
+three parsers' flag sets never drift apart. `--url` wins over
+`--urls-file`, which wins over `--discover TOPIC`. `--max-results` caps how
+many articles are fetched this run. A URL that is not an article
+(`/page/...` or `/discover/{topic}/...` on perplexity.ai), or whose path is
+disallowed by `robots.txt`, is skipped — logged, never fetched; input made
+up entirely of such URLs is `EXIT_BAD_USAGE`. `--fingerprint`/`--fp-tags`/
 `--fp-country` apply to all three engines: each sets whatever user agent
 the 2Captcha Fingerprint API returns via its own driver's real primitive
 (Playwright's `new_context(user_agent=...)`, pyppeteer's
@@ -165,11 +130,9 @@ fingerprint" below. `--captcha-api` overrides the 2Captcha REST base URL
 - **`--max-scrolls` / `--stall-rounds` / `--scroll-delay`**: every sibling
   repo's scroll/pagination loop exists because a search-results page
   keeps rendering more results as you scroll or click "load more". A
-  single Page is not paginated that way — this engine does one bounded
-  scroll-to-bottom-and-back pass per Page (to surface any lazy-loaded
-  content) and stops; `--delay-between-pages` is this repo's actual
-  equivalent for a `--urls-file` batch (politeness between fetches, not
-  between scroll rounds).
+  single article is not paginated that way, and its data comes whole from
+  one API call; `--delay-between-pages` is this repo's equivalent
+  (politeness between fetches, and between Discover feed pages).
 - **`--concurrency` / `--proxy-rotate`**: same reasoning as
   `skyscanner-scraper`/`lidl-scraper` — no independently-addressable units
   to parallelize or rotate an exit between within a single fetch.
@@ -199,24 +162,23 @@ columns after:
 ```
 sku, source, category, title, brand, price, currency, price_source, product_url,
 image_url, scraped_at,
-author, view_count, follow_up_question_count, source_count, sources_json,
-section_count, word_count, slug, published_at
+author, view_count, like_count, fork_count, source_count, sources_json,
+section_count, word_count, slug, summary, read_time_minutes, published_at, updated_at
 ```
 
-Unlike a commerce listing, a Perplexity Page is a free wiki article:
-`category`, `brand`, `price`, `currency`, and `price_source` are always
-`null` here — kept for schema parity across the family (CLAUDE.md §9)
-rather than dropped, exactly the way `skyscanner-scraper` repurposes
-`brand` for "operating airline" instead of leaving the shared contract
-behind. `sku` is the Page's own 22-character id (the stable part of its
-URL), falling back to a deterministic fingerprint of the full URL only
-when no id-shaped segment could be split out. `sources_json` is the
-Page's citations list, JSON-encoded as a string so every row still fits
-one flat CSV line — decode it with `json.loads()` if you need the list
-back. `sample_output.json`/`sample_output.csv` are **clearly fictional
-placeholder rows** (see the `[FICTIONAL SAMPLE ROW]` marker in the title
-field) — not a real capture, per the "Read this before trusting a run"
-section above.
+`sku` is `perplexity-{id}`, the 22-character id at the end of the
+article's canonical slug. `category` is the Discover topic (`top`) or
+`null` for a classic Page. `brand`, `price`, `currency` and `price_source`
+are always `null`: kept for the family's shared row prefix (CLAUDE.md §9).
+`sources_json` is every distinct cited URL across all sections, as a JSON
+string (`[{"url", "title"}]`) so a CSV row stays flat. `summary` exists
+for Discover articles only. `follow_up_question_count` was removed on
+2026-09-30: nothing the site serves carries it.
+
+A row built from the HTML fallback has only `sku`, `title`, `category`,
+`product_url`, `section_count` and `slug`, and the run logs that it was
+degraded. `sample_output.json` / `sample_output.csv` are real rows from
+the 2026-09-30 live run.
 
 **Exit codes**: `0` complete · `1` crash · `2` bad usage · `3` blocked ·
 `4` zero products (and nothing was written) · `5` remote API error · `6`
@@ -231,16 +193,21 @@ finish_run`'s docstring for the exact precedence rule and why products
 being present never launders a blocked/remote-API-error run into
 "complete").
 
-## Fetching, not pagination
+## How one article is fetched
 
-There is nothing to paginate: each engine fetches one Page URL, does a
-single bounded scroll-to-bottom-and-back pass (in case any content on the
-page is lazy-loaded — unconfirmed either way), parses it once, and moves
-to the next URL in `--urls-file` if there is one. A URL that fails
-navigation after `--retries` is recorded in the run's `failed_pages` and
-the run is `partial` (exit 6) if any Page in the same batch still
-succeeded — never a crash that discards Pages already collected earlier
-in the batch (CLAUDE.md §6).
+1. Open the article URL and wait for it to settle. If it is a Cloudflare
+   challenge, wait up to 15s for it to clear by itself, then try the
+   2Captcha solver when a key is set.
+2. Call `/rest/article/{ref}` with `fetch()` from inside the page.
+3. `page_flow.decide()` turns what was seen into one outcome, identically
+   for all three engines: an API row; an HTML-fallback row (logged as
+   degraded); not found (API 400, no row, not a block); or blocked (a
+   challenge that never cleared, or HTTP 4xx with nothing usable).
+
+A URL that fails navigation after `--retries` goes into `failed_pages` and
+the run is `partial` (exit 6) if others succeeded. `--discover TOPIC`
+first reads the feed (20 per page, by `offset`) up to `--max-results`
+URLs, then fetches each article the same way.
 
 ## Engines
 
@@ -268,33 +235,19 @@ site):
 
 ## Known limitations
 
-- **No selector on this site has been confirmed against a real page
-  yet.** See "Read this before trusting a run" above — this is the
-  single biggest gap this repo has, and the reason its own canary job
-  (`.github/workflows/canary.yml`) is the most important signal to watch
-  once this is actually deployed somewhere with real network access.
-- **Live Q&A answers are explicitly out of scope**, not just unimplemented.
-  Perplexity's interactive "Ask AI" feature on a Page is a live, per-visitor
-  feature, not static published content, and `robots.txt` disallows the
-  search/query paths that would be needed to reach it anyway. This repo
-  only ever targets a Page's own already-published content.
-- **A site-specific block-page marker now exists**, from a real, captured
-  incident (see "Read this before trusting a run" above): `page_parser.
-  BOT_CHALLENGE_MARKERS` carries two markers confirmed against the actual
-  Cloudflare managed-challenge page perplexity.ai served on 2026-09-21.
-  Generic detection via `captcha_solver.GENERIC_BOT_CHALLENGE_MARKERS`
-  already caught this same incident independently. What's still unknown:
-  whether this site ALSO serves a different challenge type in some other
-  circumstance (a different locale, IP reputation, or request pattern) —
-  if you hit one that doesn't match what's captured, `TESTING.md`
-  explains how to add it.
-- **Captcha token injection on a locally-launched browser is not
-  implemented**, same reason as the rest of the family: injecting a
-  solved token is widget/site-specific, and no real challenge from this
-  site was ever available to verify an injector against. Over
-  `--cdp-endpoint` (the Scraping Browser API), this doesn't matter —
-  2Captcha's own `Captcha.setAutoSolve` CDP domain handles it entirely
-  inside their infrastructure.
+- **Local runs are blocked by Cloudflare** in every test so far (see "Read
+  this before trusting a run"). They exit `3`, never a fake success. Use
+  `--cdp-endpoint`.
+- **Only the `top` Discover topic has items** for an anonymous visitor.
+  Other topic slugs return an empty feed, and the run reports zero
+  products (exit 4) rather than guessing.
+- **Counters can lag.** `view_count`/`like_count`/`fork_count` read `0` on
+  articles published within the last day in the live capture.
+- **Live Q&A answers are out of scope.** Only published articles are read.
+- **Selenium cannot use the Browser API** and was only run locally, where
+  it was blocked, or got HTML-only rows through a residential proxy.
+- **Solving Cloudflare's challenge page locally is not implemented.** Over
+  `--cdp-endpoint` the Browser API handles Cloudflare itself.
 
 ## Development
 

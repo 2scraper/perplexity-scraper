@@ -34,6 +34,7 @@ import captcha_solver
 import diff_runs
 import env_config
 import output_writer
+import page_flow
 import page_parser as pp
 import proxy_pool
 import puppeteer_scraper
@@ -140,21 +141,35 @@ def _():
         assert "--query" not in flags and "--category" not in flags
 
 
-@check("all engines do a single scroll-to-bottom-and-back per page, not a repeated pagination loop")
+@check("every top-level module is in the Dockerfile COPY and pyproject py-modules (a module left out breaks the image on every run — CLAUDE.md §16)")
+def _():
+    import re as _re
+    modules = sorted(pth.stem for pth in ROOT.glob("*.py"))
+    docker = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+    pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
+    listed = set(_re.findall(r'"([a-z_]+)"', pyproject.split("py-modules", 1)[1].split("]", 1)[0]))
+    for mod in modules:
+        assert f"{mod}.py" in docker, f"{mod}.py missing from the Dockerfile COPY"
+        assert mod in listed, f"{mod} missing from pyproject py-modules"
+
+
+@check("all three engines read the article from its own /rest/article/ endpoint and hand the outcome to page_flow.decide — one triage, not three copies")
 def _():
     for path in ("playwright_scraper.py", "selenium_scraper.py", "puppeteer_scraper.py"):
         src = (ROOT / path).read_text(encoding="utf-8")
-        assert "document.body.scrollHeight" in src, f"{path}: missing the lazy-content scroll pass"
-        assert "s-load-more__button" not in src, f"{path}: leftover lidl-specific pagination control"
+        assert "pp.article_api_url(ref)" in src, f"{path}: does not call the article API"
+        assert "page_flow.decide(" in src, f"{path}: decides the outcome itself instead of page_flow"
+        assert "page_flow.is_challenge(html)" in src and "CHALLENGE_WAIT_S" in src, f"{path}: no bounded challenge wait"
+        assert "credentials: 'include'" in src, f"{path}: the fetch must carry the page's own cookies"
 
 
-@check("captcha markers only classify a page as blocked when the article did not render")
+@check("over --cdp-endpoint: Playwright reuses the profile's default context and pyppeteer DISCONNECTS instead of closing the remote browser")
 def _():
-    for path in ("playwright_scraper.py", "selenium_scraper.py", "puppeteer_scraper.py"):
-        src = (ROOT / path).read_text(encoding="utf-8")
-        assert "captcha_detected and not result.products" in src, (
-            f"{path}: a marker can still turn a healthy Page into EXIT_BLOCKED"
-        )
+    pw = (ROOT / "playwright_scraper.py").read_text(encoding="utf-8")
+    assert "reuse_default and browser.contexts" in pw
+    pup = (ROOT / "puppeteer_scraper.py").read_text(encoding="utf-8")
+    assert "await browser.disconnect()" in pup and "_release(remote_browser, remote=True)" in pup
+    assert "get_event_loop().run_until_complete" not in pup, "asyncio.get_event_loop() crashes once a loop was closed"
 
 
 @check("engines never request a robots.txt-disallowed path — _resolve_urls filters it out")
@@ -203,7 +218,7 @@ def _mk_product(sku, **kw):
         brand=None, price=None, currency=None, price_source=None,
         product_url=f"https://www.perplexity.ai/page/an-example-page-{sku}",
         image_url=None, scraped_at="2026-09-21T00:00:00Z",
-        author="Henry", view_count=100, follow_up_question_count=5,
+        author="Henry", view_count=100, like_count=5,
     )
     defaults.update(kw)
     return output_writer.Product(**defaults)
@@ -299,8 +314,10 @@ def _():
     ]
     assert output_writer.PRODUCT_FIELD_NAMES[: len(expected_head)] == expected_head
     tail = output_writer.PRODUCT_FIELD_NAMES[len(expected_head):]
-    for name in ("author", "view_count", "follow_up_question_count", "source_count", "sources_json", "slug"):
+    for name in ("author", "view_count", "like_count", "fork_count", "source_count", "sources_json",
+                 "section_count", "word_count", "slug", "summary", "read_time_minutes", "published_at", "updated_at"):
         assert name in tail, f"{name} missing from Product's site-specific tail"
+    assert "follow_up_question_count" not in tail, "removed 2026-09-30: null on every row (CLAUDE.md §9)"
 
 
 @check("category/brand/price/currency/price_source are always None — not applicable to a Page")
@@ -420,176 +437,192 @@ def _():
 # page_parser — URL/id splitting, sku, robots-disallow check, the three
 # parsing paths (JSON-LD / OG meta / DOM), priority order
 # --------------------------------------------------------------------------- #
-@check("parse_page_ref splits a real-shaped /page/{slug}-{id} URL into (slug, id)")
+_FIX = ROOT / "tests" / "fixtures"
+_DISCOVER_URL = "https://www.perplexity.ai/discover/top/openai-unveils-dots-an-always-heYaECNnQuaM0AZ0QSWjaw"
+_OLD_PAGE_URL = "https://www.perplexity.ai/page/How-to-Generate-VzUTuvQVSIqru3QGvPihlg"
+
+
+def _fixture_json(name):
+    return json.loads((_FIX / name).read_text(encoding="utf-8"))
+
+
+@check("URL handling against REAL live URLs: /page/{slug}-{id}, /page/{uuid}, /discover/{topic}/{slug}-{id}, ids containing '.' and '_' (seen live), and non-article URLs refused")
 def _():
-    slug, page_id = pp.parse_page_ref("https://www.perplexity.ai/page/ai-generated-images-tools-prom-efxu3L04SpufSVPD532HQg")
-    assert slug == "ai-generated-images-tools-prom"
-    assert page_id == "efxu3L04SpufSVPD532HQg"
-    assert pp.is_page_url("https://www.perplexity.ai/page/foo-AbCdEfGhIjKlMnOpQrStUv")
-    assert not pp.is_page_url("https://www.perplexity.ai/search?q=foo")
+    assert pp.parse_page_ref(_OLD_PAGE_URL) == ("How-to-Generate", "VzUTuvQVSIqru3QGvPihlg")
+    assert pp.article_ref(_DISCOVER_URL) == ("top", "openai-unveils-dots-an-always-heYaECNnQuaM0AZ0QSWjaw")
+    dotted = "https://www.perplexity.ai/discover/top/us-completes-troop-withdrawal-.FiJwwm9STi9_gZ5rgyhXQ"
+    assert pp.parse_page_ref(dotted) == ("us-completes-troop-withdrawal", ".FiJwwm9STi9_gZ5rgyhXQ")
+    assert pp.parse_page_ref("https://www.perplexity.ai/discover/top/judge-orders-nyc-to-scrap-pied-URe1Q_iURaCkk.hSaMoWIQ")[1] == "URe1Q_iURaCkk.hSaMoWIQ"
+    uuid_url = "https://www.perplexity.ai/page/573513ba-f415-488a-abbb-7406bcf8a196"
+    assert pp.article_ref(uuid_url) == (None, "573513ba-f415-488a-abbb-7406bcf8a196")
+    assert pp.parse_page_ref(uuid_url) == (None, None), "a uuid ref carries no id — the sku must come from the API"
+    for url in (_OLD_PAGE_URL, _DISCOVER_URL, uuid_url):
+        assert pp.is_page_url(url), url
+    for url in ("https://www.perplexity.ai/discover", "https://www.perplexity.ai/search?q=x",
+                "https://example.com/page/a-AAAAAAAAAAAAAAAAAAAAAA", "https://www.perplexity.ai/hub/blog/x"):
+        assert not pp.is_page_url(url), url
+    assert pp.article_api_url("P.Mg27lmRU21zVNesSK35g").startswith("https://www.perplexity.ai/rest/article/P.Mg27lmRU21zVNesSK35g?")
 
 
-@check("parse_page_ref returns (None, None) for a non-Page URL")
-def _():
-    slug, page_id = pp.parse_page_ref("https://www.perplexity.ai/discover")
-    assert slug is None and page_id is None
-
-
-@check("is_disallowed_path matches robots.txt's own disallowed prefixes, and lets /page/ through")
+@check("is_disallowed_path matches robots.txt's own disallowed prefixes, and lets /page/ and /discover/ through")
 def _():
     assert pp.is_disallowed_path("https://www.perplexity.ai/search?q=foo")
     assert pp.is_disallowed_path("https://www.perplexity.ai/search/new")
     assert pp.is_disallowed_path("https://www.perplexity.ai/onboarding/step1")
-    assert not pp.is_disallowed_path("https://www.perplexity.ai/page/foo-AbCdEfGhIjKlMnOpQrStUv")
+    assert not pp.is_disallowed_path(_OLD_PAGE_URL)
+    assert not pp.is_disallowed_path(_DISCOVER_URL)
 
 
-@check("make_sku prefers the Page's own id over a URL fingerprint, and is deterministic")
+@check("make_sku prefers the article's own id over a URL fingerprint, and is deterministic")
 def _():
     a = pp.make_sku(page_id="AbCdEfGhIjKlMnOpQrStUv", url="https://www.perplexity.ai/page/x-AbCdEfGhIjKlMnOpQrStUv")
     b = pp.make_sku(page_id="AbCdEfGhIjKlMnOpQrStUv", url="https://www.perplexity.ai/page/y-AbCdEfGhIjKlMnOpQrStUv")
     assert a == b == "perplexity-AbCdEfGhIjKlMnOpQrStUv"
     c1 = pp.make_sku(page_id=None, url="https://www.perplexity.ai/page/some-page")
-    c2 = pp.make_sku(page_id=None, url="https://www.perplexity.ai/page/some-page")
-    c3 = pp.make_sku(page_id=None, url="https://www.perplexity.ai/page/other-page")
-    assert c1 == c2, "same URL must fingerprint to the same sku across runs"
-    assert c1 != c3
+    assert c1 == pp.make_sku(page_id=None, url="https://www.perplexity.ai/page/some-page")
+    assert c1 != pp.make_sku(page_id=None, url="https://www.perplexity.ai/page/other-page")
 
 
-_JSON_LD_ARTICLE_HTML = """
-<html><body>
-<script type="application/ld+json">
-{"@context":"https://schema.org","@type":"Article","headline":"Example Article Title",
- "author":{"@type":"Person","name":"Henry"},
- "image":["https://img.example/cover.jpg"],
- "url":"https://www.perplexity.ai/page/example-article-AbCdEfGhIjKlMnOpQrStUv",
- "articleBody":"This is a short body of example text used only to exercise the word count path.",
- "datePublished":"2026-08-01T00:00:00Z"}
-</script>
-</body></html>
-"""
-
-
-@check("parse_page: a JSON-LD Article node is the preferred path when present")
+@check("parse_article_json on the REAL live Discover article payload (2026-09-30): every field, sources deduped across sections")
 def _():
-    res = pp.parse_page(_JSON_LD_ARTICLE_HTML, url="https://www.perplexity.ai/page/example-article-AbCdEfGhIjKlMnOpQrStUv")
-    assert res.source_used == "json_ld"
-    assert len(res.products) == 1
-    p = res.products[0]
-    assert p.sku == "perplexity-AbCdEfGhIjKlMnOpQrStUv"
-    assert p.title == "Example Article Title"
-    assert p.author == "Henry"
-    assert p.image_url == "https://img.example/cover.jpg"
-    assert p.published_at == "2026-08-01T00:00:00Z"
-    assert p.word_count and p.word_count > 0
-    assert p.category is None and p.price is None, "not applicable to a Page — see output_writer.Product docstring"
-
-
-_OG_META_ONLY_HTML = """
-<html><head>
-<meta property="og:title" content="OG-only Example Page">
-<meta property="og:image" content="https://img.example/og-cover.jpg">
-<meta property="og:url" content="https://www.perplexity.ai/page/og-only-example-BcDeFgHiJkLmNoPqRsTuVw">
-<link rel="canonical" href="https://www.perplexity.ai/page/og-only-example-BcDeFgHiJkLmNoPqRsTuVw">
-</head><body><div id="app"></div></body></html>
-"""
-
-
-@check("parse_page: OG meta tags are the fallback when no JSON-LD Article/CreativeWork/WebPage node is present")
-def _():
-    res = pp.parse_page(_OG_META_ONLY_HTML, url="https://www.perplexity.ai/page/og-only-example-BcDeFgHiJkLmNoPqRsTuVw")
-    assert res.source_used == "og_meta", res.source_used
-    assert len(res.products) == 1
-    p = res.products[0]
-    assert p.title == "OG-only Example Page"
-    assert p.image_url == "https://img.example/og-cover.jpg"
-    assert p.slug == "og-only-example"
-
-
-@check("parse_page: JSON-LD is preferred over OG meta when both are present on the same page")
-def _():
-    combined = _JSON_LD_ARTICLE_HTML.replace("</body>", _OG_META_ONLY_HTML.split("<body>")[1])
-    res = pp.parse_page(combined, url="https://www.perplexity.ai/page/example-article-AbCdEfGhIjKlMnOpQrStUv")
-    assert res.source_used == "json_ld"
-
-
-_DOM_FALLBACK_HTML = """
-<html><body>
-<article>
-<h1>Rendered Fallback Page</h1>
-<div class="byline">By Nikhil</div>
-<span aria-label="1.2k views">1.2k</span>
-<span aria-label="42 questions asked">42</span>
-<h2>First Section</h2>
-<p>Some example body text used only to exercise the word/section counting path.</p>
-<h2>Second Section</h2>
-<div class="sources">
-  <a href="https://example.com/one">Example Source One</a>
-  <a href="https://example.com/two">Example Source Two</a>
-</div>
-</article>
-</body></html>
-"""
-
-
-@check("parse_page: DOM fallback parses title/author/counts/sources when no JSON-LD or OG meta is present")
-def _():
-    res = pp.parse_page(_DOM_FALLBACK_HTML, url="https://www.perplexity.ai/page/rendered-fallback-CdEfGhIjKlMnOpQrStUvWx")
-    assert res.source_used == "dom", res.source_used
-    assert len(res.products) == 1
-    p = res.products[0]
-    assert p.title == "Rendered Fallback Page"
-    assert p.author == "By Nikhil"
-    assert p.view_count == 1200, p.view_count
-    assert p.follow_up_question_count == 42, p.follow_up_question_count
-    assert p.source_count == 2
+    p = pp.parse_article_json(_fixture_json("perplexity_article_discover_live_20260930.json"), url=_DISCOVER_URL)
+    assert p is not None
+    assert p.sku == "perplexity-heYaECNnQuaM0AZ0QSWjaw"
+    assert p.category == "top"
+    assert p.title == "OpenAI unveils Dots, an always-on AI agent, at DevDay 2026"
+    assert p.product_url == _DISCOVER_URL
+    assert p.author == "pagesandbits"
+    assert p.image_url and p.image_url.startswith("https://pplx-res.cloudinary.com/")
+    assert (p.view_count, p.like_count, p.fork_count) == (0, 0, 0)
+    assert p.section_count == 4 and p.word_count and p.word_count > 300
     sources = json.loads(p.sources_json)
-    assert {s["url"] for s in sources} == {"https://example.com/one", "https://example.com/two"}
-    assert p.section_count == 2
-    assert p.word_count and p.word_count > 0
+    assert p.source_count == len(sources) == len({s["url"] for s in sources}) == 6
+    assert sources[0] == {"url": "https://openai.com/index/introducing-dots/", "title": "Introducing dots"}
+    assert p.summary.startswith("Powered by GPT-6 Astra")
+    assert p.read_time_minutes == 3
+    assert p.published_at == "2026-09-29T17:14:10.246772+00:00"
+    assert p.updated_at == "2026-09-29T17:15:35.292639"
+    assert p.price is None and p.brand is None
 
 
-@check("parse_page returns source_used='none' and no products when nothing recognisable renders")
+@check("parse_article_json on the REAL live classic-Page payload: an old /page/ slug maps to the CANONICAL slug and keeps the same id-based sku")
 def _():
-    res = pp.parse_page("<html><body><div id='app'></div></body></html>", url="https://www.perplexity.ai/page/empty-shell-DeFgHiJkLmNoPqRsTuVwXy")
-    assert res.products == []
-    assert res.source_used == "none"
+    p = pp.parse_article_json(_fixture_json("perplexity_article_page_live_20260930.json"), url=_OLD_PAGE_URL)
+    assert p.sku == "perplexity-VzUTuvQVSIqru3QGvPihlg", "the id survived a slug change live — the sku must too"
+    assert p.slug == "perplexity-ai-pages-guide-gene-VzUTuvQVSIqru3QGvPihlg"
+    assert p.product_url == "https://www.perplexity.ai/page/perplexity-ai-pages-guide-gene-VzUTuvQVSIqru3QGvPihlg"
+    assert p.category is None, "a classic Page has no Discover topic"
+    assert (p.view_count, p.fork_count) == (2280, 30)
+    assert p.section_count == 14 and p.source_count == 38
+    assert p.summary is None and p.read_time_minutes == 8
+    same = pp.parse_article_json(_fixture_json("perplexity_article_page_live_20260930.json"),
+                                 url="https://www.perplexity.ai/page/573513ba-f415-488a-abbb-7406bcf8a196")
+    assert same.sku == p.sku, "the uuid form of the same article must dedupe with the slug form"
 
 
-@check("_parse_count handles both a raw number and an abbreviated k/m suffix")
+@check("parse_article_json refuses anything that is not a successful article (the live 400 body, empty entries, no title, junk)")
 def _():
-    assert pp._parse_count("1,234") == 1234
-    assert pp._parse_count("1.2k") == 1200
-    assert pp._parse_count("3.4M") == 3_400_000
-    assert pp._parse_count(None) is None
-    assert pp._parse_count("no digits here") is None
+    for bad in ({"detail": "Invalid thread url slug"}, {"status": "success", "entries": []},
+                {"status": "success", "entries": [{"text": "{}"}]}, [], None, "x", {"status": "failed"}):
+        assert pp.parse_article_json(bad, url=_DISCOVER_URL) is None, bad
 
 
-@check("count_result_cards is a cheap presence check with no readiness wait")
+@check("parse_discover_feed on the REAL live feed payload: article URLs in feed order, topic kept, next_token means more")
 def _():
-    assert pp.count_result_cards(_DOM_FALLBACK_HTML) == 1
-    assert pp.count_result_cards("<html><body>nothing here</body></html>") == 0
+    urls, more = pp.parse_discover_feed(_fixture_json("perplexity_discover_feed_live_20260930.json"), topic="top")
+    assert urls[0] == "https://www.perplexity.ai/discover/top/us-completes-troop-withdrawal-.FiJwwm9STi9_gZ5rgyhXQ"
+    assert len(urls) == 3 and more is True
+    assert all(pp.is_page_url(u) for u in urls)
+    assert pp.parse_discover_feed({"items": [], "next_token": None}, topic="top") == ([], False)
+    assert "offset=40" in pp.discover_feed_api_url("top", offset=40)
+
+
+_APP_SHELL = "<script src='https://pplx-next-static-public.perplexity.ai/_next/a.js'></script>" * 4
+_LIVE_OG_DEFAULTS = """<meta property="og:title" content="Perplexity">
+<meta property="og:url" content="https://www.perplexity.ai/">
+<meta property="og:image" content="https://ppl-ai-public.s3.amazonaws.com/static/img/pplx-default-preview.png">"""
+
+
+@check("the site-DEFAULT Open Graph tags (identical on every page, live) never become a row — the old OG path would have titled every article 'Perplexity'")
+def _():
+    assert pp.extract_og_meta(f"<html><head>{_LIVE_OG_DEFAULTS}</head></html>") == {}
+    html = f"<html><head>{_LIVE_OG_DEFAULTS}</head><body>{_APP_SHELL}<h2>Real Title</h2><h2>Section A</h2><h2>Cookie Policy</h2></body></html>"
+    res = pp.parse_page(html, url=_DISCOVER_URL)
+    assert res.source_used == "dom" and res.products[0].title == "Real Title"
+    assert res.products[0].section_count == 1, "the title h2 and the site's Cookie Policy h2 are not sections"
+
+
+@check("the DOM fallback refuses a Cloudflare interstitial: the REAL captured challenge page yields no row (live, a local run once reported 'Performing security verification' as an article)")
+def _():
+    block = (_FIX / "perplexity_cloudflare_block_real.html").read_text(encoding="utf-8")
+    fake_heading = block.replace("</body>", "<h2>Performing security verification</h2></body>")
+    res = pp.parse_page(fake_heading, url=_OLD_PAGE_URL)
+    assert res.products == [] and res.source_used == "none"
+    assert pp.count_result_cards(fake_heading) == 0
+    assert not pp.is_app_page(block)
+
+
+@check("parse_page prefers the API payload over the HTML, and falls back to the HTML only when the payload is unusable")
+def _():
+    data = _fixture_json("perplexity_article_discover_live_20260930.json")
+    html = f"<html><body>{_APP_SHELL}<h2>DOM Title</h2></body></html>"
+    assert pp.parse_page(html, url=_DISCOVER_URL, article_json=data).source_used == "api"
+    assert pp.parse_page(html, url=_DISCOVER_URL, article_json={"detail": "x"}).source_used == "dom"
+    assert pp.parse_page("<html></html>", url=_DISCOVER_URL).source_used == "none"
 
 
 @check("safe_parse_page degrades a bad page instead of crashing the whole batch")
 def _():
-    # Family invariant (CLAUDE.md §6/§10): a parse-time exception on one
-    # page must degrade to an empty result, never propagate and crash the
-    # multi-URL batch, discarding every Page already collected from earlier
-    # URLs. Reproduce a genuine parsing-time defect (not a caller passing
-    # the wrong type) by monkeypatching the primary extraction path.
-    original = pp.extract_json_ld
-    pp.extract_json_ld = lambda *a, **kw: (_ for _ in ()).throw(ValueError("simulated parser defect"))
+    original = pp.parse_article_json
+    pp.parse_article_json = lambda *a, **kw: (_ for _ in ()).throw(ValueError("simulated parser defect"))
     try:
-        res = pp.safe_parse_page("<html></html>", url="https://www.perplexity.ai/page/x-AbCdEfGhIjKlMnOpQrStUv")
+        res = pp.safe_parse_page("<html></html>", url=_DISCOVER_URL, article_json={"status": "success"})
     finally:
-        pp.extract_json_ld = original
-    assert res.products == []
-    assert res.source_used == "none"
+        pp.parse_article_json = original
+    assert res.products == [] and res.source_used == "none"
+
+
+@check("page_flow.decide: the five live outcomes — api row, dom row (degraded), 400 = not_found (not blocked), challenge = blocked (never parsed), HTTP 403 with nothing = blocked")
+def _():
+    data = _fixture_json("perplexity_article_discover_live_20260930.json")
+    app = f"<html><body>{_APP_SHELL}<h2>DOM Title</h2></body></html>"
+    block = (_FIX / "perplexity_cloudflare_block_real.html").read_text(encoding="utf-8")
+
+    o = page_flow.decide(url=_DISCOVER_URL, http_status=200, html=app, api_status=200, article_json=data, api_error=None)
+    assert o.product and o.source_used == "api" and not o.blocked and not o.warnings
+
+    o = page_flow.decide(url=_DISCOVER_URL, http_status=200, html=app, api_status=403, article_json=None, api_error="not JSON")
+    assert o.product and o.source_used == "dom" and not o.blocked and len(o.warnings) == 2
+
+    o = page_flow.decide(url=_DISCOVER_URL, http_status=200, html=app, api_status=400, article_json={"detail": "x"}, api_error=None)
+    assert o.not_found and not o.blocked and o.product is None
+
+    o = page_flow.decide(url=_DISCOVER_URL, http_status=403, html=block, api_status=0, article_json=None, api_error="skipped")
+    assert o.blocked and o.product is None
+
+    o = page_flow.decide(url=_DISCOVER_URL, http_status=403, html="<html></html>", api_status=403, article_json=None, api_error="not JSON")
+    assert o.blocked and o.product is None
+
+    o = page_flow.decide(url=_DISCOVER_URL, http_status=200, html="<html></html>", api_status=500, article_json=None, api_error="HTTP 500")
+    assert not o.blocked and o.product is None, "nothing recognised is not a block"
+    assert page_flow.is_challenge(block) and not page_flow.is_challenge(app + "cf-turnstile")
 
 
 # --------------------------------------------------------------------------- #
 # CLI validation — bad usage never crashes, never writes output
 # --------------------------------------------------------------------------- #
+@check("each engine: same --discover flag, and a non-article URL is skipped (never fetched), leaving EXIT_BAD_USAGE when nothing is left")
+def _():
+    for mod in (playwright_scraper, selenium_scraper, puppeteer_scraper):
+        args = mod.build_arg_parser().parse_args(["--discover", "top", "--max-results", "5"])
+        assert args.discover == "top" and args.max_results == 5
+        urls, skipped = mod._resolve_urls(mod.build_arg_parser().parse_args(["--url", "https://www.perplexity.ai/hub/blog/x"]))
+        assert urls == [] and skipped == 1, mod.__name__
+        with tempfile.TemporaryDirectory() as td:
+            args = mod.build_arg_parser().parse_args(["--url", "https://www.perplexity.ai/hub/blog/x", "--out", str(Path(td) / "o.json")])
+            assert asyncio_run_maybe(mod, args) == output_writer.EXIT_BAD_USAGE, mod.__name__
+
+
 @check("each engine: no --url/--urls-file is EXIT_BAD_USAGE, not a crash")
 def _():
     for mod in (playwright_scraper, selenium_scraper, puppeteer_scraper):

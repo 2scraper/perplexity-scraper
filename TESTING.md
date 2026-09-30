@@ -1,21 +1,30 @@
 # Testing with real credentials and the live site
 
-**Nothing below has been run with this repo's OWN engines yet.** This
-repo's build environment could not reach perplexity.ai directly from any
-plain-`curl`-style shell (every one available hit a proxy-level 403) — so
-every item below involving `playwright_scraper.py`/`selenium_scraper.py`/
-`puppeteer_scraper.py` is still open. **One thing is no longer open**: a
-full browser-rendering tool (not a `curl`-style shell — a real browser
-pane) DID reach perplexity.ai directly, twice, and got served a real
-Cloudflare managed challenge both times (see README "Read this before
-trusting a run" and `page_parser.py`'s module docstring for the full
-incident, `CHANGELOG.md` for the dated entry). That's a confirmed data
-point about the SITE, not about this repo's own scrapers — it doesn't
-tell you whether a real Playwright run behaves the same way, since a
-managed challenge can pass silently for a client Cloudflare trusts and
-headless Chromium is exactly the kind of client it's designed to be
-suspicious of. Offline checks (`smoke_test.py`) are useful for the
-architecture, but do not substitute for the runs below.
+**Live status, 2026-09-30.** Over a US Scraping Browser API profile
+(`PERPLEXITY_CDP_ENDPOINT`):
+
+| Engine | Run | Result |
+|---|---|---|
+| Playwright | 3 URLs (old Page, Discover article, dead URL) | 2 full rows, dead URL `page_not_found`, exit 0 |
+| Playwright | `--discover top --max-results 25` | 25/25 rows, every applicable column filled, exit 0 |
+| Puppeteer | the same 3 URLs; `--discover top --max-results 5` | same rows, exit 0 |
+| Playwright, local headless and headful | 1-2 URLs | Cloudflare challenge never cleared → exit 3 |
+| Selenium, local headless | 1 URL | Cloudflare challenge → exit 3 |
+| Selenium, headful via US residential proxy | 3 URLs | page served, API 403 → HTML-only rows (title, sections) |
+
+Still open: a local run that Cloudflare lets through, and Selenium
+against the article API.
+
+The quickest real check:
+
+```bash
+python3 playwright_scraper.py --discover top --max-results 5 --out /tmp/pplx.json
+cat /tmp/pplx.json.meta.json        # status: complete, product_count: 5
+```
+
+A warning "parsed from the rendered HTML only" means the article API was
+refused — rows are then thin. "served a bot challenge that did not clear"
+means Cloudflare blocked this browser; switch to `--cdp-endpoint`.
 
 Run everything below from a normal terminal on your own machine — wherever
 this repo lives for you.

@@ -5,41 +5,29 @@ puppeteer_scraper.py for parity copies — all three must agree on exit
 codes, run status and whether a run crashes or spends money — CLAUDE.md
 §4).
 
-**Genuine CLI divergence from every sibling repo (CLAUDE.md §1) — read
-this before comparing this file to lidl-scraper's/skyscanner-scraper's/
-stockx-scraper's own playwright_scraper.py**: those three all take
-`--query`/`--category` and scroll/paginate a search-RESULTS listing.
-Perplexity Pages have no site-search mechanism to point a query at —
-`robots.txt` explicitly disallows `/*?*q=` and `/search*` for every
-crawler, and no `?q=`-style endpoint against perplexity.ai itself surfaces
-Pages (see `page_parser.py`'s module docstring for the full research this
-is based on). A Page is reachable only via its own specific URL — from an
-external search engine's result, or a shared link — so this engine takes
-`--url` (one Page) or `--urls-file` (a batch of Page URLs, one per line)
-instead. There is no scroll/pagination loop here: each URL is fetched
-once, parsed once, done. `--max-results` here caps how many URLs from
-`--urls-file` are actually fetched this run, not a product count within
-one page (there is exactly zero or one Product per Page).
+**Input**: `--url` (one article), `--urls-file` (one per line), or
+`--discover top` (the Discover feed, paged until `--max-results`). Both
+URL kinds work: classic `/page/{slug}-{id}` Pages and
+`/discover/{topic}/{slug}-{id}` articles. There is no site search to point
+a query at (robots.txt disallows `/search*`), hence no `--query`.
 
-**No live capture of this site exists yet** (see page_parser.py's module
-docstring — direct network access to perplexity.ai is blocked from every
-shell available in this environment). `NAV_TIMEOUT_MS`/`READINESS_WAIT_MS`
-below are therefore carried over unchanged from lidl-scraper's own
-values, not independently measured against perplexity.ai — a reasonable
-starting guess for a client-rendered SPA, not a confirmed one. Same for
-`BOT_CHALLENGE_MARKERS` (empty, per page_parser.py) — this engine still
-wires in the family's generic bot-challenge detection so a real block
-found by a future live run is EXIT_BLOCKED (3), not misreported as an
-empty/crashed run.
+**How one article is read (confirmed live 2026-09-30, see page_parser.py)**:
+navigate to the article so the browser holds the site's own cookies
+(and clears Cloudflare, if it challenges), then call the article's own
+data endpoint `/rest/article/{ref}` with `fetch()` from INSIDE that page
+and parse the JSON. The rendered HTML is only a fallback: it has no
+counters, no sources, and site-default Open Graph tags.
 
 Example:
-    python3 playwright_scraper.py --url "https://www.perplexity.ai/page/some-article-AbCdEfGhIjKlMnOpQrStUv" --format json --out results.json
+    python3 playwright_scraper.py --url "https://www.perplexity.ai/page/How-to-Generate-VzUTuvQVSIqru3QGvPihlg"
+    python3 playwright_scraper.py --discover top --max-results 40 --format csv
     python3 playwright_scraper.py --urls-file pages.txt --max-results 20 --dump-html
 """
 from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import logging
 import sys
 import time
@@ -56,8 +44,9 @@ else:
     _PLAYWRIGHT_IMPORT_ERROR = None
 
 import env_config
+import page_flow
 import page_parser as pp
-from captcha_solver import detect_from_html, solve_when_blocked
+from captcha_solver import solve_when_blocked
 from fingerprint_client import fetch_fingerprint, refuse_if_cdp, user_agent_from
 from output_writer import EXIT_BAD_USAGE, EXIT_CRASH, Product, finish_run
 from proxy_pool import Proxy, ProxyPool, ProxyParseError, is_proxy_dead_error, load_proxies, redact_credentials
@@ -66,10 +55,25 @@ from scraper_api_client import TwoCaptchaClient
 ENGINE_NAME = "playwright"
 
 # --- the handful of engine constants that vary per site (CLAUDE.md §5) ---
-# UNVERIFIED for perplexity.ai — carried over from lidl-scraper's own
-# values pending a real capture (see module docstring above).
-NAV_TIMEOUT_MS = 30_000
-READINESS_WAIT_MS = 3_000
+NAV_TIMEOUT_MS = 45_000
+READINESS_WAIT_MS = 3_000  # the /rest/ calls need the origin's cookies, not a painted article
+API_TIMEOUT_MS = 30_000
+CHALLENGE_WAIT_S = 15  # a Cloudflare managed challenge can clear by itself; give it this long
+
+# In-page fetch of a same-origin /rest/ URL. Returns {status, text} or
+# {status: 0, error}; never throws into the engine.
+_FETCH_JS = """
+async ([u, timeoutMs]) => {
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), timeoutMs);
+  try {
+    const r = await fetch(u, {credentials: 'include', headers: {accept: 'application/json'}, signal: ctl.signal});
+    return {status: r.status, text: await r.text()};
+  } catch (e) {
+    return {status: 0, error: String(e)};
+  } finally { clearTimeout(t); }
+}
+"""
 MIN_CARD_MATCHES = pp.MIN_CARD_MATCHES
 
 log = logging.getLogger("playwright_scraper")
@@ -101,9 +105,10 @@ def build_arg_parser() -> argparse.ArgumentParser:
         description="perplexity.ai Pages scraper — Playwright engine",
         epilog="Credentials belong in .env / PERPLEXITY_PROXY / TWOCAPTCHA_KEY — never on this command line.",
     )
-    p.add_argument("--url", default=None, help="A single Perplexity Page URL, e.g. https://www.perplexity.ai/page/... (or set PERPLEXITY_URL) — overrides --urls-file")
-    p.add_argument("--urls-file", default=None, help="Path to a file with one Page URL per line")
-    p.add_argument("--max-results", type=_positive_int, default=30, help="Cap on how many URLs from --urls-file are actually fetched this run")
+    p.add_argument("--url", default=None, help="One article URL: https://www.perplexity.ai/page/... or .../discover/{topic}/... (or set PERPLEXITY_URL) — overrides --urls-file/--discover")
+    p.add_argument("--urls-file", default=None, help="Path to a file with one article URL per line")
+    p.add_argument("--discover", default=None, metavar="TOPIC", help="Scrape the Discover feed for TOPIC ('top' is the one with items for an anonymous visitor), up to --max-results articles")
+    p.add_argument("--max-results", type=_positive_int, default=30, help="Cap on how many articles are fetched this run")
     p.add_argument("--delay-between-pages", type=_nonnegative_float, default=1.0, help="Politeness delay between fetches when processing more than one URL, seconds")
     p.add_argument("--format", choices=["json", "csv"], default="json")
     p.add_argument("--out", default=None, help="Output path (default: perplexity_results.<format>)")
@@ -159,6 +164,10 @@ def _resolve_urls(args: argparse.Namespace) -> tuple:
             log.warning("Skipping %s — its path is disallowed by perplexity.ai's robots.txt; this tool never requests a disallowed path.", url)
             skipped += 1
             continue
+        if not pp.is_page_url(url):
+            log.warning("Skipping %s — not a perplexity.ai article URL (/page/... or /discover/{topic}/...).", url)
+            skipped += 1
+            continue
         urls.append(url)
     return urls, skipped
 
@@ -168,13 +177,45 @@ def _dump_path(out_path: str, index: int) -> str:
     return f"{stem}_debug_{index}.html"
 
 
-async def _new_context(browser: Browser, proxy: Optional[Proxy], user_agent: Optional[str]) -> BrowserContext:
-    kwargs = {}
+async def _new_context(
+    browser: Browser, proxy: Optional[Proxy], user_agent: Optional[str], *, reuse_default: bool = False,
+) -> BrowserContext:
+    """Over --cdp-endpoint, reuse the profile's own default context: it
+    holds the cookies (Cloudflare clearance included) that make the
+    profile worth reusing — the same fix shein-scraper needed live. A
+    local browser gets a fresh isolated context per URL."""
+    if reuse_default and browser.contexts:
+        return browser.contexts[0]
+    kwargs = {"locale": "en-US"}  # titles follow the browser language (see selenium_scraper)
     if proxy is not None:
         kwargs["proxy"] = proxy.playwright_proxy_dict()
     if user_agent:
         kwargs["user_agent"] = user_agent
     return await browser.new_context(**kwargs)
+
+
+async def _close(page: Page, context: BrowserContext, *, reuse_default: bool) -> None:
+    try:
+        await page.close()
+        if not reuse_default:
+            await context.close()
+    except Exception as exc:  # noqa: BLE001 — cleanup only
+        log.debug("close failed: %s", exc)
+
+
+async def _fetch_json(page: Page, url: str) -> tuple:
+    """(status, decoded JSON or None, error text) for a same-origin /rest/ URL."""
+    try:
+        res = await page.evaluate(_FETCH_JS, [url, API_TIMEOUT_MS])
+    except Exception as exc:  # noqa: BLE001 — a closed page / navigation race is a failed fetch, not a crash
+        return 0, None, str(exc)
+    status = int(res.get("status") or 0)
+    if status == 0:
+        return 0, None, res.get("error") or "fetch failed"
+    try:
+        return status, json.loads(res.get("text") or ""), None
+    except ValueError:
+        return status, None, "response was not JSON (likely a challenge page)"
 
 
 async def _enable_scraping_browser_auto_solve(context: BrowserContext, page: Page) -> None:
@@ -231,15 +272,12 @@ async def scrape_one_page(
     proxy_pool: Optional[ProxyPool], client: Optional[TwoCaptchaClient],
     autosolve: bool, user_agent: Optional[str],
 ) -> tuple:
-    """Returns (product_or_none, blocked, nav_failed). One Page URL is one
-    unit of work — unlike the sibling repos' scroll loop, there is no
-    pagination within a single Page, so this is a straight fetch-once,
-    parse-once function."""
-    blocked = False
+    """Returns (product_or_none, blocked, nav_failed, not_found)."""
+    reuse_default = bool(args.cdp_endpoint)
 
     proxy = proxy_pool.next() if proxy_pool else None
-    log.info("Fetching %s (proxy: %s)", url, proxy.masked() if proxy else "(no local proxy pool — direct connection, or a --cdp-endpoint session providing its own exit)")
-    context = await _new_context(browser, proxy, user_agent)
+    log.info("Fetching %s (proxy: %s)", url, proxy.masked() if proxy else "(none — direct, or the --cdp-endpoint session's own exit)")
+    context = await _new_context(browser, proxy, user_agent, reuse_default=reuse_default)
     page = await context.new_page()
     if autosolve:
         await _enable_scraping_browser_auto_solve(context, page)
@@ -250,73 +288,97 @@ async def scrape_one_page(
         try:
             response = await page.goto(url, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
             await page.wait_for_timeout(READINESS_WAIT_MS)
-            # One gentle scroll-to-bottom-and-back: Perplexity's own Pages
-            # announcement describes a scrollable article with images —
-            # UNCONFIRMED whether any of it is lazy-loaded, but a single
-            # scroll pass is cheap insurance against missing lazy content,
-            # same reasoning as lidl-scraper's own scroll loop, just
-            # without the repeated "click load more" pagination this site
-            # has no equivalent of.
-            try:
-                await page.evaluate("() => window.scrollTo(0, document.body.scrollHeight)")
-                await page.wait_for_timeout(500)
-                await page.evaluate("() => window.scrollTo(0, 0)")
-            except Exception:  # noqa: BLE001 — best-effort only, never fatal to the fetch
-                pass
             status = response.status if response is not None else None
             last_error = None
             break
         except Exception as exc:  # noqa: BLE001 — every remote call must be bounded and reported
-            last_error = str(exc)
+            last_error = redact_credentials(str(exc))
             log.warning("Navigation attempt %d/%d for %s failed: %s", attempt + 1, args.retries + 1, url, last_error)
+            if proxy_pool is not None and proxy is not None and is_proxy_dead_error(last_error):
+                proxy_pool.report_failure(proxy, dead=True)
             if attempt < args.retries:
                 await asyncio.sleep(args.retry_delay)
 
     if last_error is not None:
-        await context.close()
+        await _close(page, context, reuse_default=reuse_default)
         log.error("%s permanently failed to load: %s", url, last_error)
-        return None, False, True
-
-    if status is not None and status >= 400:
-        log.warning("%s returned HTTP %d — treating as blocked, not empty.", url, status)
-        blocked = True
-        if proxy_pool is not None and proxy is not None and status in (403, 429):
-            proxy_pool.report_failure(proxy, dead=True)
-    elif status is not None and proxy_pool is not None and proxy is not None:
-        proxy_pool.report_success(proxy)
+        return None, False, True, False
 
     html = await page.content()
-    captcha_detected = detect_from_html(html, pp.BOT_CHALLENGE_MARKERS)
-    result = pp.safe_parse_page(html, url=url)
-    if captcha_detected and not result.products:
-        blocked = True
-    captcha_result = await _maybe_solve_captcha(html=html, url=url, client=client, policy=args.solve_captcha, min_score=args.min_score)
-    if captcha_result and captcha_result.get("action") in ("warning_no_key", "warning_solver_error", "detected_unidentified_widget"):
-        if not result.products:
-            blocked = True
-        else:
-            # A successful solve, or a challenge marker alongside an
-            # already-rendered article, is not a block — same precedent
-            # as every sibling repo's own scroll loop.
-            blocked = False
-    if result.products:
-        blocked = False
+    waited = 0.0
+    while page_flow.is_challenge(html) and waited < CHALLENGE_WAIT_S:
+        await page.wait_for_timeout(1000)
+        waited += 1
+        try:
+            html = await page.content()
+        except Exception:  # noqa: BLE001 — mid-navigation while the challenge redirects
+            continue
+    if waited and not page_flow.is_challenge(html):
+        log.info("%s: Cloudflare challenge cleared by itself after %.0fs.", url, waited)
+    if page_flow.is_challenge(html):
+        captcha_result = await _maybe_solve_captcha(html=html, url=url, client=client, policy=args.solve_captcha, min_score=args.min_score)
+        if captcha_result and captcha_result.get("action") == "solved":
+            await page.wait_for_timeout(READINESS_WAIT_MS)
+            html = await page.content()
 
-    if result.source_used == "none" and not blocked:
-        log.warning(
-            "Nothing recognised on %s — either this isn't a real Page, or "
-            "page_parser.py's selectors need updating for the current "
-            "perplexity.ai markup (see its module docstring; no live "
-            "capture has confirmed them yet). Re-run with --dump-html to "
-            "inspect the captured page.", url,
-        )
+    _topic, ref = pp.article_ref(url)
+    api_status, article_json, api_error = (0, None, "skipped: page is a bot challenge")
+    if not page_flow.is_challenge(html):
+        api_status, article_json, api_error = await _fetch_json(page, pp.article_api_url(ref))
+    outcome = page_flow.decide(url=url, http_status=status, html=html, api_status=api_status,
+                               article_json=article_json, api_error=api_error)
+    for message in outcome.warnings:
+        log.warning("%s", message)
+    blocked = outcome.blocked
+    if proxy_pool is not None and proxy is not None:
+        if blocked and status in (403, 429):
+            proxy_pool.report_failure(proxy, dead=True)
+        elif not blocked:
+            proxy_pool.report_success(proxy)
 
     if args.dump_html:
         Path(_dump_path(args.out, index)).write_text(html, encoding="utf-8")
 
-    await context.close()
-    product = result.products[0] if result.products else None
-    return product, blocked, False
+    await _close(page, context, reuse_default=reuse_default)
+    return outcome.product, blocked, False, outcome.not_found
+
+
+async def collect_discover_urls(
+    *, topic: str, limit: int, args: argparse.Namespace, browser: Browser,
+    proxy_pool: Optional[ProxyPool], user_agent: Optional[str],
+) -> tuple:
+    """(urls, error) from the Discover feed, paged 20 at a time by offset
+    until `limit` distinct URLs or the feed runs out. `error` is set when
+    even the first page could not be read."""
+    reuse_default = bool(args.cdp_endpoint)
+    proxy = proxy_pool.next() if proxy_pool else None
+    context = await _new_context(browser, proxy, user_agent, reuse_default=reuse_default)
+    page = await context.new_page()
+    urls: List[str] = []
+    try:
+        try:
+            await page.goto(pp.DISCOVER_URL, wait_until="domcontentloaded", timeout=NAV_TIMEOUT_MS)
+            await page.wait_for_timeout(READINESS_WAIT_MS)
+        except Exception as exc:  # noqa: BLE001
+            return [], f"could not open {pp.DISCOVER_URL}: {redact_credentials(str(exc))}"
+        offset = 0
+        while len(urls) < limit:
+            status, data, error = await _fetch_json(page, pp.discover_feed_api_url(topic, offset=offset))
+            if error or status != 200:
+                if not urls:
+                    return [], f"Discover feed HTTP {status or '-'}: {error or 'unexpected status'}"
+                log.warning("Discover feed page at offset %d failed (HTTP %s) — keeping the %d URLs collected.", offset, status or "-", len(urls))
+                break
+            page_urls, has_more = pp.parse_discover_feed(data, topic=topic)
+            new = [u for u in page_urls if u not in urls]
+            urls.extend(new)
+            if not new or not has_more:
+                break
+            offset += len(page_urls)
+            await asyncio.sleep(args.delay_between_pages)
+        return urls[:limit], None
+    finally:
+        await _close(page, context, reuse_default=reuse_default)
 
 
 async def scrape_urls(
@@ -325,19 +387,17 @@ async def scrape_urls(
     autosolve: bool, user_agent: Optional[str],
 ) -> tuple:
     """Returns (products, blocked, remote_api_error, pages_completed,
-    failed_pages). A single URL's navigation failure degrades to a
-    per-page skip (added to failed_pages), never a crash that discards
-    every Page already collected from earlier URLs in the same batch —
-    same family invariant (CLAUDE.md §6) as every sibling engine's round
-    loop, just at "URL in the batch" granularity instead of "scroll
-    round"."""
+    failed_pages). One URL's failure is a per-URL skip, never a crash that
+    loses the batch (CLAUDE.md §6). A URL whose article does not exist
+    counts as completed with no row: it is a fact about the site."""
     products: List[Product] = []
     failed_pages: List[int] = []
     any_blocked = False
     completed = 0
 
-    for i, url in enumerate(urls[: args.max_results], start=1):
-        product, blocked, nav_failed = await scrape_one_page(
+    batch = urls[: args.max_results]
+    for i, url in enumerate(batch, start=1):
+        product, blocked, nav_failed, _not_found = await scrape_one_page(
             url=url, index=i, args=args, browser=browser, proxy_pool=proxy_pool,
             client=client, autosolve=autosolve, user_agent=user_agent,
         )
@@ -349,7 +409,7 @@ async def scrape_urls(
                 any_blocked = True
             if product is not None:
                 products.append(product)
-        if i < len(urls[: args.max_results]):
+        if i < len(batch):
             await asyncio.sleep(args.delay_between_pages)
 
     return products, any_blocked, False, completed, failed_pages
@@ -362,11 +422,12 @@ async def run(args: argparse.Namespace) -> int:
     except ValueError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return EXIT_BAD_USAGE
-    if not urls:
+    discover_topic = None if urls or args.url or args.urls_file else args.discover
+    if not urls and not discover_topic:
         if skipped_disallowed:
-            print(f"Error: every URL given was disallowed by robots.txt ({skipped_disallowed} skipped) — nothing left to fetch", file=sys.stderr)
+            print(f"Error: none of the URLs given is a fetchable article ({skipped_disallowed} skipped) — nothing left to fetch", file=sys.stderr)
         else:
-            print("Error: provide --url or --urls-file", file=sys.stderr)
+            print("Error: provide --url, --urls-file or --discover", file=sys.stderr)
         return EXIT_BAD_USAGE
     if args.format not in ("json", "csv"):
         print(f"Error: unsupported --format {args.format!r}", file=sys.stderr)
@@ -419,8 +480,22 @@ async def run(args: argparse.Namespace) -> int:
             else:
                 browser = await pw.chromium.launch(headless=args.headless)
 
+            if not cdp_connect_failed and discover_topic:
+                urls, discover_error = await collect_discover_urls(
+                    topic=discover_topic, limit=args.max_results, args=args, browser=browser,
+                    proxy_pool=proxy_pool, user_agent=user_agent,
+                )
+                if discover_error:
+                    log.error("Discover feed unavailable — treating as remote_api_error: %s", discover_error)
+                    cdp_connect_failed = True
+                elif not urls:
+                    log.warning("Discover topic %r returned no articles.", discover_topic)
+                else:
+                    log.info("Discover topic %r: %d article URL(s) to fetch.", discover_topic, len(urls))
             if cdp_connect_failed:
                 products, blocked, remote_api_error, completed, failed_pages = [], False, True, 0, []
+                if browser is not None:
+                    await browser.close()
             else:
                 autosolve = bool(args.cdp_endpoint) and args.solve_captcha != "off"
                 products, blocked, remote_api_error, completed, failed_pages = await scrape_urls(
@@ -439,7 +514,7 @@ async def run(args: argparse.Namespace) -> int:
         out_path=args.out,
         fmt=args.format,
         engine=ENGINE_NAME,
-        url=urls[0] if urls else "",
+        url=(urls[0] if urls else "") if not discover_topic else f"{pp.DISCOVER_URL} (topic={discover_topic})",
         pages_requested=len(urls[: args.max_results]),
         pages_completed=completed,
         failed_pages=failed_pages or None,

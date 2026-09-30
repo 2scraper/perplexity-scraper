@@ -9,6 +9,55 @@ rather than being a silent violation of that.
 
 ## [Unreleased]
 
+### Changed — 2026-09-30, rebuilt on the first live capture of real articles
+- Recon through a US Scraping Browser API profile over CDP (HTTP 200, no
+  Cloudflare challenge) replaced every guessed selector with confirmed
+  facts. **The article data comes from the site's own JSON endpoint
+  `/rest/article/{slug-or-uuid}`**; the HTML carries no JSON-LD, and its
+  Open Graph tags are the site-wide defaults on every page.
+- `page_parser.py` rewritten. `parse_article_json()` is the primary path
+  (title, author, summary, read time, publish/update times,
+  view/like/fork counters, sections, words, deduped sources, hero image).
+  `parse_discover_feed()` reads the Discover feed. The HTML fallback reads
+  only the title and section headings.
+- **Both URL kinds**: classic `/page/{slug}-{id}` (still resolves; creating
+  new Pages is retired) and `/discover/{topic}/{slug}-{id}`, where new
+  articles live. `sku` is the 22-character id, which survived a live slug
+  change.
+- **Bugs the live data exposed**:
+  - ids containing `.` (`.FiJwwm9STi9_gZ5rgyhXQ`) failed the old
+    `[A-Za-z0-9_-]` id regex;
+  - the OG path would have titled EVERY article "Perplexity" with the
+    site root as its URL (default OG tags);
+  - on a local run, the DOM fallback turned Cloudflare's own
+    "Performing security verification" heading into an article and
+    reported exit 0. The fallback now requires the app's own asset host
+    (`pplx-next-static-public`: 195 hits per real page, 0 on both
+    challenge captures).
+- New `page_flow.py`: one pure `decide()` for all three engines — API row,
+  degraded HTML row, not found (API 400: no row, not blocked), blocked
+  (challenge that never cleared; HTTP 4xx with nothing usable).
+- All three engines: open the article, wait up to 15s for a Cloudflare
+  challenge to clear, then `fetch()` `/rest/article/` from inside the page
+  with its cookies. `--discover TOPIC` reads the feed, 20 per page, up to
+  `--max-results`. English locale pinned: Perplexity translated a title to
+  a Russian-locale browser's language live.
+- Playwright over CDP reuses the profile's default context (keeps its
+  cookies), as shein-scraper needed.
+- pyppeteer: over CDP, one connection per run is DISCONNECTED, never
+  closed (`close()` ended the remote session). `asyncio.run()` replaces
+  `get_event_loop()`. Its "Target closed" / "No session with given id"
+  futures no longer log as ERROR on every page close.
+- `Product`: removed `follow_up_question_count` (nothing the site serves
+  carries it — CLAUDE.md §9); added `like_count`, `fork_count`, `summary`,
+  `read_time_minutes`, `updated_at`. `category` is the Discover topic.
+- Real API captures committed as fixtures
+  (`tests/fixtures/*_live_20260930.json`); `sample_output.*` are real rows.
+  `smoke_test.py`: 50 → 51 checks, the parser ones rebuilt on those
+  fixtures.
+- Live results: see TESTING.md's table. Cloudflare blocked every local
+  browser tried; `--cdp-endpoint` is now the recommended setup.
+
 ### Added — 2026-09-21, first live incident: a real Cloudflare managed challenge
 - **First live data point ever captured for this site, and it's a
   block.** A full browser-rendering tool (not a `curl`-style shell — see

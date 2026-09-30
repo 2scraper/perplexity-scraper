@@ -37,6 +37,7 @@ py-modules = [
     "scraper_api_client",
     "diff_runs",
     "page_parser",
+    "page_flow",
     "playwright_scraper",
     "selenium_scraper",
     "puppeteer_scraper",

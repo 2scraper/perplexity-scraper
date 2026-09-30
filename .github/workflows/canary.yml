@@ -25,7 +25,7 @@ jobs:
   canary-local:
     runs-on: ubuntu-latest
     env:
-      CANARY_URL: ${{ vars.PERPLEXITY_CANARY_URL || 'https://www.perplexity.ai/page/ai-generated-images-tools-prom-efxu3L04SpufSVPD532HQg' }}
+      CANARY_URL: ${{ vars.PERPLEXITY_CANARY_URL || 'https://www.perplexity.ai/page/How-to-Generate-VzUTuvQVSIqru3QGvPihlg' }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
@@ -78,7 +78,7 @@ jobs:
     runs-on: ubuntu-latest
     env:
       HAS_CDP: ${{ secrets.PERPLEXITY_CDP_ENDPOINT != '' }}
-      CANARY_URL: ${{ vars.PERPLEXITY_CANARY_URL || 'https://www.perplexity.ai/page/ai-generated-images-tools-prom-efxu3L04SpufSVPD532HQg' }}
+      CANARY_URL: ${{ vars.PERPLEXITY_CANARY_URL || 'https://www.perplexity.ai/page/How-to-Generate-VzUTuvQVSIqru3QGvPihlg' }}
     steps:
       - uses: actions/checkout@v4
 

@@ -20,15 +20,18 @@ Chromium binary: sourced from `PYPPETEER_EXECUTABLE_PATH` /
 Playwright/system Chromium instead of pyppeteer's own bundled download),
 otherwise pyppeteer's own default.
 
-**CLI divergence from every sibling repo — see playwright_scraper.py's
-module docstring** for why this takes `--url`/`--urls-file` instead of
-`--query`/`--category`: Perplexity Pages have no site-search mechanism to
-point a query at.
+Same input and the same read path as playwright_scraper.py (see its
+module docstring): navigate to the article, `fetch()` its own
+`/rest/article/{ref}` from inside the page, decide the outcome in
+`page_flow.decide()`. Over `--cdp-endpoint` one connection serves the
+whole run and is DISCONNECTED at the end, never closed — `close()` on a
+connected pyppeteer browser ends the remote Browser API session itself.
 """
 from __future__ import annotations
 
 import argparse
 import asyncio
+import json
 import logging
 import os
 import sys
@@ -49,18 +52,32 @@ else:
     _PYPPETEER_IMPORT_ERROR = None
 
 import env_config
+import page_flow
 import page_parser as pp
-from captcha_solver import detect_from_html, solve_when_blocked
+from captcha_solver import solve_when_blocked
 from output_writer import EXIT_BAD_USAGE, EXIT_CRASH, Product, finish_run
 from fingerprint_client import fetch_fingerprint, refuse_if_cdp, user_agent_from
 from proxy_pool import Proxy, ProxyPool, ProxyParseError, is_proxy_dead_error, load_proxies, redact_credentials
 from scraper_api_client import TwoCaptchaClient
 
 ENGINE_NAME = "puppeteer"
-# UNVERIFIED for perplexity.ai — carried over from lidl-scraper's own
-# values pending a real capture (see page_parser.py's module docstring).
-NAV_TIMEOUT_MS = 30_000
+NAV_TIMEOUT_MS = 45_000
 READINESS_WAIT_S = 3.0
+API_TIMEOUT_MS = 30_000
+CHALLENGE_WAIT_S = 15
+
+_FETCH_JS = """
+async (u, timeoutMs) => {
+  const ctl = new AbortController();
+  const t = setTimeout(() => ctl.abort(), timeoutMs);
+  try {
+    const r = await fetch(u, {credentials: 'include', headers: {accept: 'application/json'}, signal: ctl.signal});
+    return {status: r.status, text: await r.text()};
+  } catch (e) {
+    return {status: 0, error: String(e)};
+  } finally { clearTimeout(t); }
+}
+"""
 
 log = logging.getLogger("puppeteer_scraper")
 
@@ -79,8 +96,9 @@ def build_arg_parser() -> argparse.ArgumentParser:
         description="perplexity.ai Pages scraper — pyppeteer (Puppeteer) engine",
         epilog="Credentials belong in .env / PERPLEXITY_PROXY / TWOCAPTCHA_KEY — never on this command line.",
     )
-    p.add_argument("--url", default=None)
+    p.add_argument("--url", default=None, help="One article URL (/page/... or /discover/{topic}/...) — overrides --urls-file/--discover")
     p.add_argument("--urls-file", default=None)
+    p.add_argument("--discover", default=None, metavar="TOPIC", help="Scrape the Discover feed for TOPIC ('top'), up to --max-results articles")
     p.add_argument("--max-results", type=_positive_int, default=30)
     p.add_argument("--delay-between-pages", type=float, default=1.0)
     p.add_argument("--format", choices=["json", "csv"], default="json")
@@ -130,6 +148,10 @@ def _resolve_urls(args: argparse.Namespace) -> tuple:
             log.warning("Skipping %s — its path is disallowed by perplexity.ai's robots.txt; this tool never requests a disallowed path.", url)
             skipped += 1
             continue
+        if not pp.is_page_url(url):
+            log.warning("Skipping %s — not a perplexity.ai article URL (/page/... or /discover/{topic}/...).", url)
+            skipped += 1
+            continue
         urls.append(url)
     return urls, skipped
 
@@ -145,7 +167,7 @@ async def _launch(*, headless: bool, proxy: Optional[Proxy], cdp_endpoint: Optio
             return await pyppeteer_connect(browserWSEndpoint=cdp_endpoint, defaultViewport=None)
         except Exception as exc:
             raise RuntimeError(f"CDP connection failed: {redact_credentials(str(exc))}") from None
-    args = ["--no-sandbox", "--disable-dev-shm-usage"]
+    args = ["--no-sandbox", "--disable-dev-shm-usage", "--lang=en-US"]  # see selenium_scraper: titles follow the browser language
     if proxy is not None:
         args.append(proxy.pyppeteer_launch_arg())
     kwargs = dict(headless=headless, args=args)
@@ -189,132 +211,171 @@ async def _maybe_solve_captcha(*, html: str, url: str, client: Optional[TwoCaptc
     return result
 
 
-async def scrape_one_page(
-    *, url: str, index: int, args: argparse.Namespace,
-    proxy_pool: Optional[ProxyPool], client: Optional[TwoCaptchaClient], autosolve: bool = False,
-    user_agent: Optional[str] = None,
-) -> Tuple[Optional[Product], bool, bool]:
-    """Returns (product_or_none, blocked, nav_failed). See
-    playwright_scraper.scrape_one_page for the full rationale — one Page
-    URL, fetched and parsed once, no pagination within a single Page."""
-    blocked = False
-
-    proxy = proxy_pool.next() if proxy_pool else None
-    log.info("Fetching %s (proxy: %s)", url, proxy.masked() if proxy else "(no local proxy pool — direct connection, or a --cdp-endpoint session providing its own exit)")
+async def _release(browser, *, remote: bool) -> None:
     try:
-        browser = await _launch(headless=args.headless, proxy=proxy, cdp_endpoint=args.cdp_endpoint)
-    except RuntimeError as exc:
-        log.error("CDP connection failed — treating as remote_api_error, not a crash: %s", exc)
-        return None, False, False  # remote_api_error is surfaced by the caller when the FIRST url fails to even launch
+        if remote:
+            await browser.disconnect()
+        else:
+            await browser.close()
+    except Exception as exc:  # noqa: BLE001 — cleanup only
+        log.debug("browser release failed: %s", exc)
+
+
+async def _fetch_json(page, url: str) -> tuple:
+    """(status, decoded JSON or None, error text) — see playwright_scraper._fetch_json."""
+    try:
+        res = await page.evaluate(_FETCH_JS, url, API_TIMEOUT_MS)
+    except Exception as exc:  # noqa: BLE001
+        return 0, None, str(exc)
+    status = int((res or {}).get("status") or 0)
+    if status == 0:
+        return 0, None, (res or {}).get("error") or "fetch failed"
+    try:
+        return status, json.loads(res.get("text") or ""), None
+    except ValueError:
+        return status, None, "response was not JSON (likely a challenge page)"
+
+
+async def _open_page(browser, *, proxy: Optional[Proxy], user_agent: Optional[str], autosolve: bool):
     page = await browser.newPage()
     if user_agent:
         await page.setUserAgent(user_agent)
     await _authenticate_if_needed(page, proxy)
     if autosolve:
         await _enable_scraping_browser_auto_solve(page)
+    return page
 
-    last_error = None
-    status = None
-    for attempt in range(args.retries + 1):
-        try:
-            response = await page.goto(url, {"waitUntil": "domcontentloaded", "timeout": NAV_TIMEOUT_MS})
-            await asyncio.sleep(READINESS_WAIT_S)
+
+async def scrape_one_page(
+    *, url: str, index: int, args: argparse.Namespace, browser,
+    proxy: Optional[Proxy], proxy_pool: Optional[ProxyPool], client: Optional[TwoCaptchaClient],
+    autosolve: bool = False, user_agent: Optional[str] = None,
+) -> Tuple[Optional[Product], bool, bool, bool]:
+    """Returns (product_or_none, blocked, nav_failed, not_found) — see
+    playwright_scraper.scrape_one_page."""
+    log.info("Fetching %s (proxy: %s)", url, proxy.masked() if proxy else "(none — direct, or the --cdp-endpoint session's own exit)")
+    page = await _open_page(browser, proxy=proxy, user_agent=user_agent, autosolve=autosolve)
+    try:
+        last_error = None
+        status = None
+        for attempt in range(args.retries + 1):
             try:
-                await page.evaluate("() => window.scrollTo(0, document.body.scrollHeight)")
-                await asyncio.sleep(0.5)
-                await page.evaluate("() => window.scrollTo(0, 0)")
-            except Exception:  # noqa: BLE001 — best-effort only, never fatal to the fetch
-                pass
-            status = response.status if response is not None else None
-            if proxy_pool is not None and proxy is not None:
-                proxy_pool.report_success(proxy)
-            last_error = None
-            break
-        except (NetworkError, PageError, PyppeteerTimeoutError, Exception) as exc:  # noqa: BLE001
-            message = str(exc)
-            last_error = message
-            dead = is_proxy_dead_error(message)
-            if proxy_pool is not None and proxy is not None and dead:
+                response = await page.goto(url, {"waitUntil": "domcontentloaded", "timeout": NAV_TIMEOUT_MS})
+                await asyncio.sleep(READINESS_WAIT_S)
+                status = response.status if response is not None else None
+                last_error = None
+                break
+            except (NetworkError, PageError, PyppeteerTimeoutError, Exception) as exc:  # noqa: BLE001
+                last_error = redact_credentials(str(exc))
+                if proxy_pool is not None and proxy is not None and is_proxy_dead_error(last_error):
+                    proxy_pool.report_failure(proxy, dead=True)
+                log.warning("Navigation attempt %d/%d for %s failed: %s", attempt + 1, args.retries + 1, url, last_error)
+                if attempt < args.retries:
+                    await asyncio.sleep(args.retry_delay)
+        if last_error is not None:
+            log.error("%s permanently failed to load: %s", url, last_error)
+            return None, False, True, False
+
+        html = await page.content()
+        waited = 0.0
+        while page_flow.is_challenge(html) and waited < CHALLENGE_WAIT_S:
+            await asyncio.sleep(1)
+            waited += 1
+            try:
+                html = await page.content()
+            except Exception:  # noqa: BLE001 — mid-navigation while the challenge redirects
+                continue
+        if waited and not page_flow.is_challenge(html):
+            log.info("%s: Cloudflare challenge cleared by itself after %.0fs.", url, waited)
+        if page_flow.is_challenge(html):
+            captcha_result = await _maybe_solve_captcha(html=html, url=url, client=client, policy=args.solve_captcha, min_score=args.min_score)
+            if captcha_result and captcha_result.get("action") == "solved":
+                await asyncio.sleep(READINESS_WAIT_S)
+                html = await page.content()
+
+        _topic, ref = pp.article_ref(url)
+        api_status, article_json, api_error = (0, None, "skipped: page is a bot challenge")
+        if not page_flow.is_challenge(html):
+            api_status, article_json, api_error = await _fetch_json(page, pp.article_api_url(ref))
+        outcome = page_flow.decide(url=url, http_status=status, html=html, api_status=api_status,
+                                   article_json=article_json, api_error=api_error)
+        for message in outcome.warnings:
+            log.warning("%s", message)
+        if proxy_pool is not None and proxy is not None:
+            if outcome.blocked and status in (403, 429):
                 proxy_pool.report_failure(proxy, dead=True)
-                log.warning("Proxy reported dead: %s", message)
-            else:
-                log.warning("Navigation attempt %d/%d for %s failed: %s", attempt + 1, args.retries + 1, url, message)
-            if attempt < args.retries:
-                await asyncio.sleep(args.retry_delay)
+            elif not outcome.blocked:
+                proxy_pool.report_success(proxy)
+        if args.dump_html:
+            Path(_dump_path(args.out, index)).write_text(html, encoding="utf-8")
+        return outcome.product, outcome.blocked, False, outcome.not_found
+    finally:
+        try:
+            await page.close()
+        except Exception:  # noqa: BLE001
+            pass
 
-    if last_error is not None:
-        await browser.close()
-        log.error("%s permanently failed to load: %s", url, last_error)
-        return None, False, True
 
-    if status is not None and status >= 400:
-        log.warning("%s returned HTTP %d — treating as blocked, not empty.", url, status)
-        blocked = True
-
-    html = await page.content()
-    captcha_detected = detect_from_html(html, pp.BOT_CHALLENGE_MARKERS)
-    result = pp.safe_parse_page(html, url=url)
-    if captcha_detected and not result.products:
-        blocked = True
-    captcha_result = await _maybe_solve_captcha(html=html, url=url, client=client, policy=args.solve_captcha, min_score=args.min_score)
-    if captcha_result and captcha_result.get("action") in ("warning_no_key", "warning_solver_error", "detected_unidentified_widget"):
-        if not result.products:
-            blocked = True
-        else:
-            blocked = False
-    if result.products:
-        blocked = False
-
-    if result.source_used == "none" and not blocked:
-        log.warning(
-            "Nothing recognised on %s — either this isn't a real Page, or "
-            "page_parser.py's selectors need updating (no live capture has "
-            "confirmed them yet). Re-run with --dump-html to inspect the "
-            "captured page.", url,
-        )
-
-    if args.dump_html:
-        Path(_dump_path(args.out, index)).write_text(html, encoding="utf-8")
-
-    await browser.close()
-    product = result.products[0] if result.products else None
-    return product, blocked, False
+async def collect_discover_urls(*, topic: str, limit: int, args: argparse.Namespace, browser,
+                                proxy: Optional[Proxy], user_agent: Optional[str]) -> tuple:
+    """(urls, error) — see playwright_scraper.collect_discover_urls."""
+    page = await _open_page(browser, proxy=proxy, user_agent=user_agent, autosolve=False)
+    urls: List[str] = []
+    try:
+        try:
+            await page.goto(pp.DISCOVER_URL, {"waitUntil": "domcontentloaded", "timeout": NAV_TIMEOUT_MS})
+            await asyncio.sleep(READINESS_WAIT_S)
+        except Exception as exc:  # noqa: BLE001
+            return [], f"could not open {pp.DISCOVER_URL}: {redact_credentials(str(exc))}"
+        offset = 0
+        while len(urls) < limit:
+            status, data, error = await _fetch_json(page, pp.discover_feed_api_url(topic, offset=offset))
+            if error or status != 200:
+                if not urls:
+                    return [], f"Discover feed HTTP {status or '-'}: {error or 'unexpected status'}"
+                log.warning("Discover feed page at offset %d failed (HTTP %s) — keeping the %d URLs collected.", offset, status or "-", len(urls))
+                break
+            page_urls, has_more = pp.parse_discover_feed(data, topic=topic)
+            new = [u for u in page_urls if u not in urls]
+            urls.extend(new)
+            if not new or not has_more:
+                break
+            offset += len(page_urls)
+            await asyncio.sleep(args.delay_between_pages)
+        return urls[:limit], None
+    finally:
+        try:
+            await page.close()
+        except Exception:  # noqa: BLE001
+            pass
 
 
 async def scrape_urls(
-    *, urls: List[str], args: argparse.Namespace,
+    *, urls: List[str], args: argparse.Namespace, remote_browser,
     proxy_pool: Optional[ProxyPool], client: Optional[TwoCaptchaClient], autosolve: bool = False,
     user_agent: Optional[str] = None,
 ) -> tuple:
     """Returns (products, blocked, remote_api_error, pages_completed,
-    failed_pages). See playwright_scraper.scrape_urls for the full
-    rationale (a single URL's navigation failure degrades to a per-page
-    skip, never a crash that discards the rest of the batch). A
-    `--cdp-endpoint` that fails to connect at all fails EVERY url the same
-    way (there is only one browser instance for the whole batch here,
-    unlike a per-page proxy rotation), so that specific failure IS
-    reported as `remote_api_error` for the whole run rather than per-page,
-    matching every sibling engine's own connect-once-per-run shape."""
+    failed_pages). Over CDP every URL shares `remote_browser`; locally
+    each URL gets a fresh browser on its own exit (a rotation is a fresh
+    browser — CLAUDE.md §8)."""
     products: List[Product] = []
     failed_pages: List[int] = []
     any_blocked = False
     completed = 0
-    remote_api_error = False
 
     capped = urls[: args.max_results]
     for i, url in enumerate(capped, start=1):
-        if args.cdp_endpoint:
-            try:
-                probe = await _launch(headless=args.headless, proxy=None, cdp_endpoint=args.cdp_endpoint)
-                await probe.close()
-            except RuntimeError as exc:
-                log.error("CDP connection failed — treating as remote_api_error, not a crash: %s", exc)
-                remote_api_error = True
-                break
-        product, blocked, nav_failed = await scrape_one_page(
-            url=url, index=i, args=args, proxy_pool=proxy_pool, client=client, autosolve=autosolve,
-            user_agent=user_agent,
-        )
+        proxy = proxy_pool.next() if proxy_pool else None
+        browser = remote_browser or await _launch(headless=args.headless, proxy=proxy, cdp_endpoint=None)
+        try:
+            product, blocked, nav_failed, _not_found = await scrape_one_page(
+                url=url, index=i, args=args, browser=browser, proxy=proxy, proxy_pool=proxy_pool,
+                client=client, autosolve=autosolve, user_agent=user_agent,
+            )
+        finally:
+            if remote_browser is None:
+                await _release(browser, remote=False)
         if nav_failed:
             failed_pages.append(i)
         else:
@@ -326,21 +387,37 @@ async def scrape_urls(
         if i < len(capped):
             await asyncio.sleep(args.delay_between_pages)
 
-    return products, any_blocked, remote_api_error, completed, failed_pages
+    return products, any_blocked, False, completed, failed_pages
+
+
+_CLOSED_TARGET_NOISE = ("Target closed", "No session with given id")
+
+
+def _quiet_target_closed(loop, context) -> None:
+    """pyppeteer leaves a detachFromTarget/sendMessageToTarget future
+    failing with "Target closed" or "No session with given id" behind a
+    page.close() — logged as an ERROR although nothing went wrong (seen on
+    every live run). Everything else still reaches the default handler."""
+    exc = context.get("exception")
+    if isinstance(exc, NetworkError) and any(m in str(exc) for m in _CLOSED_TARGET_NOISE):
+        return
+    loop.default_exception_handler(context)
 
 
 async def run(args: argparse.Namespace) -> int:
     started_at = time.time()
+    asyncio.get_running_loop().set_exception_handler(_quiet_target_closed)
     try:
         urls, skipped_disallowed = _resolve_urls(args)
     except ValueError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return EXIT_BAD_USAGE
-    if not urls:
+    discover_topic = None if urls or args.url or args.urls_file else args.discover
+    if not urls and not discover_topic:
         if skipped_disallowed:
-            print(f"Error: every URL given was disallowed by robots.txt ({skipped_disallowed} skipped) — nothing left to fetch", file=sys.stderr)
+            print(f"Error: none of the URLs given is a fetchable article ({skipped_disallowed} skipped) — nothing left to fetch", file=sys.stderr)
         else:
-            print("Error: provide --url or --urls-file", file=sys.stderr)
+            print("Error: provide --url, --urls-file or --discover", file=sys.stderr)
         return EXIT_BAD_USAGE
     if args.format not in ("json", "csv"):
         print(f"Error: unsupported --format {args.format!r}", file=sys.stderr)
@@ -376,23 +453,53 @@ async def run(args: argparse.Namespace) -> int:
             if profile:
                 user_agent = user_agent_from(profile)
 
+    remote_browser = None
+    remote_api_error = False
+    products, blocked, completed, failed_pages = [], False, 0, []
     try:
-        products, blocked, remote_api_error, completed, failed_pages = await scrape_urls(
-            urls=urls, args=args, proxy_pool=proxy_pool, client=client, autosolve=autosolve,
-            user_agent=user_agent,
-        )
-        price_confirmed_pct = None  # not applicable — Pages carry no price (see output_writer.Product docstring)
+        if args.cdp_endpoint:
+            try:
+                remote_browser = await _launch(headless=args.headless, proxy=None, cdp_endpoint=args.cdp_endpoint)
+            except RuntimeError as exc:
+                log.error("CDP connection failed — treating as remote_api_error, not a crash: %s", exc)
+                remote_api_error = True
+        if not remote_api_error and discover_topic:
+            proxy = proxy_pool.next() if proxy_pool else None
+            browser = remote_browser or await _launch(headless=args.headless, proxy=proxy, cdp_endpoint=None)
+            try:
+                urls, discover_error = await collect_discover_urls(
+                    topic=discover_topic, limit=args.max_results, args=args, browser=browser,
+                    proxy=proxy, user_agent=user_agent,
+                )
+            finally:
+                if remote_browser is None:
+                    await _release(browser, remote=False)
+            if discover_error:
+                log.error("Discover feed unavailable — treating as remote_api_error: %s", discover_error)
+                remote_api_error = True
+            elif not urls:
+                log.warning("Discover topic %r returned no articles.", discover_topic)
+            else:
+                log.info("Discover topic %r: %d article URL(s) to fetch.", discover_topic, len(urls))
+        if not remote_api_error:
+            products, blocked, remote_api_error, completed, failed_pages = await scrape_urls(
+                urls=urls, args=args, remote_browser=remote_browser, proxy_pool=proxy_pool, client=client,
+                autosolve=autosolve, user_agent=user_agent,
+            )
     except Exception:
         log.exception("Unhandled error — this is a crash, not a normal blocked/empty run")
         return EXIT_CRASH
+    finally:
+        if remote_browser is not None:
+            await _release(remote_browser, remote=True)
 
     return finish_run(
         products=products, out_path=args.out, fmt=args.format, engine=ENGINE_NAME,
-        url=urls[0] if urls else "",
+        url=(urls[0] if urls else "") if not discover_topic else f"{pp.DISCOVER_URL} (topic={discover_topic})",
         pages_requested=len(urls[: args.max_results]), pages_completed=completed,
         failed_pages=failed_pages or None,
         blocked=blocked, remote_api_error=remote_api_error, allow_empty=args.allow_empty,
-        started_at=started_at, price_confirmed_pct=price_confirmed_pct,
+        started_at=started_at, price_confirmed_pct=None,
     )
 
 
@@ -401,7 +508,9 @@ def main() -> int:
     args = build_arg_parser().parse_args()
     args = env_config.apply_env(args)
     try:
-        return asyncio.get_event_loop().run_until_complete(run(args))
+        # asyncio.run(), not get_event_loop(): the latter raises in any
+        # process that already ran and closed a loop (shein-scraper hit it).
+        return asyncio.run(run(args))
     except KeyboardInterrupt:
         return EXIT_CRASH
 
