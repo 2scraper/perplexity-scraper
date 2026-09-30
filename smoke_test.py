@@ -64,6 +64,8 @@ def check(name):
             RESULTS.append((name, False, str(exc)))
         except Exception as exc:  # a check that crashes is still a failure, not an uncaught traceback
             RESULTS.append((name, False, f"{type(exc).__name__}: {exc}"))
+        except SystemExit as exc:  # a CLI helper exiting inside a check would otherwise end the whole suite silently
+            RESULTS.append((name, False, f"SystemExit: {exc}"))
         return fn
     return decorator
 
@@ -215,10 +217,10 @@ def _():
     assert output_writer.STATUS_BY_EXIT == expected
 
 
-def _mk_product(sku, **kw):
+def _mk_product(sku, price=None, **kw):
     defaults = dict(
         sku=sku, source="perplexity.ai", category=None, title="An Example Page",
-        brand=None, price=None, currency=None, price_source=None,
+        brand=None, price=price, currency=None, price_source=None,
         product_url=f"https://www.perplexity.ai/page/an-example-page-{sku}",
         image_url=None, scraped_at="2026-09-21T00:00:00Z",
         author="Henry", view_count=100, like_count=5,
@@ -227,20 +229,36 @@ def _mk_product(sku, **kw):
     return output_writer.Product(**defaults)
 
 
-@check("finish_run precedence: remote_api_error status is never laundered into 'complete' just because products were present")
+@check("finish_run: rows gathered by a run that did not finish are PARTIAL (6) with the cause in stop_reason — never 5/3 with a file (CLAUDE.md §25; audit 2026-09-30 got exit 5 AND a written file). Rewrites the old pinned 'exit 5 with products' position deliberately.")
 def _():
+    cases = (
+        (dict(blocked=True, remote_api_error=True), "remote_api_error"),
+        (dict(blocked=False, remote_api_error=True), "remote_api_error"),
+        (dict(blocked=True, remote_api_error=False), "blocked"),
+        (dict(blocked=False, remote_api_error=False, failed_pages=[3]), "failed_pages"),
+        (dict(blocked=False, remote_api_error=False, rejected_rows=2), "rejected_rows"),
+    )
+    for kw, reason in cases:
+        with tempfile.TemporaryDirectory() as td:
+            out = str(Path(td) / "out.json")
+            kw = {"failed_pages": None, **kw}
+            code = output_writer.finish_run(
+                products=[_mk_product("1")], out_path=out, fmt="json", engine="test", url="u",
+                pages_requested=3, pages_completed=2, allow_empty=False, started_at=0.0, **kw,
+            )
+            assert code == output_writer.EXIT_PARTIAL, (kw, code)
+            assert Path(out).exists(), "already-collected products must still be written out"
+            meta = json.loads(Path(f"{out}.meta.json").read_text())
+            assert meta["status"] == "partial" and meta["stop_reason"] == reason, (kw, meta)
+            if reason == "rejected_rows":
+                assert meta["rejected_rows"] == 2
     with tempfile.TemporaryDirectory() as td:
-        out = str(Path(td) / "out.json")
+        out = str(Path(td) / "z.json")
         code = output_writer.finish_run(
-            products=[_mk_product("a")], out_path=out, fmt="json", engine="test", url="u",
-            pages_requested=1, pages_completed=1, failed_pages=None,
-            blocked=True, remote_api_error=True, allow_empty=True, started_at=0.0,
+            products=[], out_path=out, fmt="json", engine="test", url="u", pages_requested=1, pages_completed=0,
+            failed_pages=None, blocked=False, remote_api_error=True, allow_empty=False, started_at=0.0,
         )
-        assert code == output_writer.EXIT_REMOTE_API_ERROR
-        assert Path(out).exists(), "already-collected products must still be written out"
-        meta = json.loads(Path(f"{out}.meta.json").read_text())
-        assert meta["status"] == "remote_api_error", meta["status"]
-
+        assert code == output_writer.EXIT_REMOTE_API_ERROR and not Path(out).exists(), "5 promises no file"
 
 @check("finish_run precedence: blocked+zero-products respects --allow-empty for WHETHER to write, never for the STATUS")
 def _():
@@ -766,6 +784,115 @@ def _():
     client = scraper_api_client.TwoCaptchaClient("fakekey", api_base="https://mock.example.test")
     assert client.api_base == "https://mock.example.test"
     assert client.api_base != scraper_api_client.API_BASE
+
+
+def _diff_run(td, name, rows, url, **kw):
+    out = str(Path(td) / name)
+    kw.setdefault("allow_empty", False)
+    output_writer.finish_run(products=rows, out_path=out, fmt="json", engine="t", url=url, pages_requested=1,
+                             pages_completed=1, failed_pages=None, blocked=False, remote_api_error=False,
+                             started_at=0.0, **kw)
+    return out
+
+
+@check("diff_runs refuses different selections, never calls a currency switch a price change (even at the same number), reads a capped top-N's missing SKU as left_selection, and rejects a sidecar that does not describe its file (audit 2026-09-30)")
+def _():
+    dress, jeans = "https://us.shein.com/pdsearch/dress/", "https://us.shein.com/pdsearch/jeans/"
+    with tempfile.TemporaryDirectory() as td:
+        a = _diff_run(td, "a.json", [_mk_product("s1", 9.93, currency="USD")], dress)
+        b = _diff_run(td, "b.json", [_mk_product("s1", 19.93, currency="EUR")], jeans)
+        try:
+            diff_runs.diff(a, b)
+            raise AssertionError("different selections must be refused")
+        except SystemExit as exc:
+            assert "different selections" in str(exc)
+        r = diff_runs.diff(a, b, allow_different_scope=True)
+        assert not r["changed"] and len(r["currency_changed"]) == 1
+
+        c = _diff_run(td, "c.json", [_mk_product("s1", 10.0, currency="USD")], dress)
+        e = _diff_run(td, "e.json", [_mk_product("s1", 10.0, currency="EUR")], dress + "?")
+        r = diff_runs.diff(c, e)
+        assert r["currency_changed"] and not r["changed"], "same number, other currency must still be reported"
+
+        f = _diff_run(td, "f.json", [_mk_product("s1"), _mk_product("s2")], dress, max_results=2)
+        g = _diff_run(td, "g.json", [_mk_product("s1"), _mk_product("s3")], dress, max_results=2)
+        r = diff_runs.diff(f, g)
+        assert r["capped"] and r["left_selection"] == ["s2"] and r["removed"] == [] and r["added"] == ["s3"]
+        h = _diff_run(td, "h.json", [_mk_product("s1"), _mk_product("s2")], dress, max_results=50)
+        i = _diff_run(td, "i.json", [_mk_product("s1")], dress, max_results=50)
+        r = diff_runs.diff(h, i)
+        assert r["removed"] == ["s2"] and not r["capped"], "an uncapped run's missing SKU really is removed"
+
+        Path(g).write_text("[]", encoding="utf-8")
+        try:
+            diff_runs.diff(f, g)
+            raise AssertionError("a sidecar whose hash does not match must be refused")
+        except SystemExit as exc:
+            assert "output_sha256" in str(exc)
+
+@check("the credential scanner FINDS a planted key in every shape seen in the family (JSON-quoted, JSON-escaped, 32-hex next to a key word) and ignores placeholders, type hints and Python-name mappings — a scanner that cannot fail is not one (CLAUDE.md §24/§25)")
+def _():
+    import importlib.util
+    scanner = ROOT / ".github" / "ci_checks.py"
+    if not (ROOT / ".github").is_dir():
+        return
+    spec = importlib.util.spec_from_file_location("shein_ci_checks_planted", scanner)
+    mod = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(mod)
+    fake32 = "0123456789abcdef" * 2
+    for planted in ('"api_key": "a8f3k2m9q7x1z5b4"', '{\\"api_key\\": \\"a8f3k2m9q7x1z5b4\\"}',
+                    "TWOCAPTCHA_KEY=" + fake32, '"clientKey":"' + fake32 + '"'):
+        assert mod.scan_text("planted.txt", planted), f"scanner missed a planted credential: {planted!r}"
+    for harmless in ("api_key: Optional[str] = None", "TWOCAPTCHA_KEY=your-key-here", '"TWOCAPTCHA_KEY": "twocaptcha_key",'):
+        assert not mod.scan_text("ok.txt", harmless), f"false positive: {harmless!r}"
+
+@check("no workflow imports a local module inline — tests.yml calls ci_checks.py instead (CLAUDE.md §26: an inline heredoc import is red only on the first push)")
+def _():
+    import re as _re
+    if not (ROOT / ".github").is_dir():
+        return  # the Docker image ships no .github/ (CLAUDE.md §22)
+    local = {p.stem for p in ROOT.glob("*.py")}
+    for wf in (ROOT / ".github" / "workflows").glob("*.yml"):
+        text = wf.read_text(encoding="utf-8")
+        for m in _re.finditer(r"^\s*(?:from\s+([A-Za-z_]\w*)\s+import|import\s+([A-Za-z_]\w*))", text, _re.M):
+            name = m.group(1) or m.group(2)
+            assert name not in local, f"{wf.name}: imports local module {name!r} inline"
+    assert "ci_checks.py --sample-check" in (ROOT / ".github" / "workflows" / "tests.yml").read_text(encoding="utf-8")
+
+@check(".gitignore covers every artefact a run writes (CLAUDE.md §22/§26): .env copies, --dump-html challenge screenshots, *.pageN dumps, live/ — while sample outputs, fixtures and .env.example stay tracked")
+def _():
+    import subprocess as _sp
+    if not (ROOT / ".git").exists():
+        return
+    must_ignore = [".env", ".env.bak", ".env.local", "perplexity_results_debug_1.html",
+                   "out.json.page3", "live/x.html", "perplexity_results.json", "run.json"]
+    must_keep = [".env.example", "sample_output.json", "sample_output.csv", "tests/fixtures/perplexity_article_discover_live_20260930.json"]
+    for path in must_ignore:
+        assert _sp.run(["git", "check-ignore", "-q", path], cwd=ROOT).returncode == 0, f"not ignored: {path}"
+    for path in must_keep:
+        assert _sp.run(["git", "check-ignore", "-q", path], cwd=ROOT).returncode != 0, f"wrongly ignored: {path}"
+
+
+@check("sidecar records sort, total_results, solves_spent, max_results/capped and the output hash; a throttle with rows is stop_reason=rate_limited (CLAUDE.md §24); diff_runs refuses runs of another --sort")
+def _():
+    with tempfile.TemporaryDirectory() as td:
+        out = str(Path(td) / "o.json")
+        code = output_writer.finish_run(
+            products=[_mk_product("1")], out_path=out, fmt="json", engine="t", url="u", pages_requested=2,
+            pages_completed=1, failed_pages=None, blocked=True, remote_api_error=False, allow_empty=False,
+            started_at=0.0, rate_limited=True, total_results=40, max_results=1, extra_meta={"sort": None, "solves_spent": 0},
+        )
+        meta = json.loads(Path(out + ".meta.json").read_text())
+        assert code == output_writer.EXIT_PARTIAL and meta["stop_reason"] == "rate_limited", meta
+        assert meta["total_results"] == 40 and meta["capped"] is True and len(meta["output_sha256"]) == 64
+        url = "https://www.perplexity.ai/discover (topic=top)"
+        a = _diff_run(td, "a.json", [_mk_product("s1")], url, extra_meta={"sort": "a"})
+        b = _diff_run(td, "b.json", [_mk_product("s1")], url, extra_meta={"sort": "b"})
+        try:
+            diff_runs.diff(a, b)
+            raise AssertionError("different --sort must be refused")
+        except SystemExit as exc:
+            assert "--sort" in str(exc)
 
 
 def run() -> int:

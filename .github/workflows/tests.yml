@@ -28,49 +28,21 @@ jobs:
             python3 "$engine.py" --help > /dev/null
           done
       - name: sample_output.{json,csv} match the Product schema
-        run: |
-          python3 -c "
-          import csv, json
-          from output_writer import PRODUCT_FIELD_NAMES
-          rows = json.load(open('sample_output.json'))
-          assert rows and set(rows[0]) == set(PRODUCT_FIELD_NAMES)
-          with open('sample_output.csv', newline='') as f:
-              header = next(csv.reader(f))
-          assert header == PRODUCT_FIELD_NAMES
-          print('sample_output OK')
-          "
+        run: python3 .github/ci_checks.py --sample-check
       - name: No committed credentials
+        run: python3 .github/ci_checks.py
+      # The shipped artefact, not the checkout: a module missing from
+      # pyproject's py-modules imports fine here and breaks every install.
+      - name: The wheel imports every module outside the checkout
         run: |
-          set +e
-          # smoke_test.py deliberately contains fake-credential-SHAPED
-          # fixtures to test the masking/redaction logic itself — excluded
-          # alongside .env.example, not a loosening of the check against
-          # real leaks (same exclusion the rest of the family applies to
-          # its own smoke_test.py).
-          MATCHES=$(grep -rnE "(api[_-]?key|TWOCAPTCHA_KEY|PERPLEXITY_PROXY)\s*=\s*['\"][A-Za-z0-9]{10,}" \
-            --include="*.py" --include="*.md" --include="*.env*" . | grep -vE "\.env\.example|smoke_test\.py")
-          set -e
-          if [ -n "$MATCHES" ]; then
-            echo "$MATCHES"
-            echo "::error::possible committed credential — see matches above"
-            exit 1
-          fi
-          echo "no committed credentials found"
-
-  docker:
-    name: docker image builds, runs, and launches Chromium
-    runs-on: ubuntu-latest
-    # Build the Docker image in CI — nothing else does, and this is how
-    # every older repo in this family shipped a broken one at least once.
-    # Four steps, each catching a distinct way the image can lie about
-    # working: it builds at all; its own entrypoint runs (the image's CMD
-    # is --help — the exact invocation a missing module breaks); a real
-    # browser actually launches (not just "playwright install --with-deps"
-    # exiting 0); and it carries no .env, no test suite and no fixtures —
-    # a .env baked into a published image is a credential handed to
-    # everyone who can pull it.
-    steps:
-      - uses: actions/checkout@v4
+          pip install build
+          python -m build --wheel --outdir /tmp/wheel .
+          python -m venv /tmp/wheelenv
+          /tmp/wheelenv/bin/pip install /tmp/wheel/*.whl
+          cd /tmp
+          for m in $(python -c "import pathlib; print(' '.join(p.stem for p in pathlib.Path('$GITHUB_WORKSPACE').glob('*.py')))"); do
+            /tmp/wheelenv/bin/python -c "import $m" || { echo "::error::$m does not import from the wheel"; exit 1; }
+          done
       - name: Build the image
         run: docker build -t perplexity-scraper:ci .
       - name: Entrypoint runs (the CMD a missing module would break)
