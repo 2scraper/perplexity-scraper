@@ -109,7 +109,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--urls-file", default=None, help="Path to a file with one article URL per line")
     p.add_argument("--discover", default=None, metavar="TOPIC", help="Scrape the Discover feed for TOPIC ('top' is the one with items for an anonymous visitor), up to --max-results articles")
     p.add_argument("--max-results", type=_positive_int, default=30, help="Cap on how many articles are fetched this run")
-    p.add_argument("--delay-between-pages", type=_nonnegative_float, default=1.0, help="Politeness delay between fetches when processing more than one URL, seconds")
+    p.add_argument("--delay-between-pages", type=_nonnegative_float, default=2.0, help="Politeness delay between fetches when processing more than one URL, seconds")
     p.add_argument("--format", choices=["json", "csv"], default="json")
     p.add_argument("--out", default=None, help="Output path (default: perplexity_results.<format>)")
     p.add_argument("--retries", type=_nonnegative_int, default=2, help="Retries on a single page's navigation failure")
@@ -325,6 +325,12 @@ async def scrape_one_page(
     api_status, article_json, api_error = (0, None, "skipped: page is a bot challenge")
     if not page_flow.is_challenge(html):
         api_status, article_json, api_error = await _fetch_json(page, pp.article_api_url(ref))
+        for delay in page_flow.API_RETRY_DELAYS_S:
+            if not page_flow.should_retry_api(api_status, api_error):
+                break
+            log.info("%s: article API HTTP %s — retrying in %ss (a fresh profile needs the page's own bot check first).", url, api_status or "-", delay)
+            await asyncio.sleep(delay)
+            api_status, article_json, api_error = await _fetch_json(page, pp.article_api_url(ref))
     outcome = page_flow.decide(url=url, http_status=status, html=html, api_status=api_status,
                                article_json=article_json, api_error=api_error)
     for message in outcome.warnings:

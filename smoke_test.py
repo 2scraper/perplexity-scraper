@@ -546,13 +546,13 @@ _LIVE_OG_DEFAULTS = """<meta property="og:title" content="Perplexity">
 <meta property="og:image" content="https://ppl-ai-public.s3.amazonaws.com/static/img/pplx-default-preview.png">"""
 
 
-@check("the site-DEFAULT Open Graph tags (identical on every page, live) never become a row — the old OG path would have titled every article 'Perplexity'")
+@check("the rendered HTML never becomes a row, even a well-formed article page — live, a DEAD URL rendered the previously viewed article's full headings, with no id in the HTML to tell them apart")
 def _():
-    assert pp.extract_og_meta(f"<html><head>{_LIVE_OG_DEFAULTS}</head></html>") == {}
-    html = f"<html><head>{_LIVE_OG_DEFAULTS}</head><body>{_APP_SHELL}<h2>Real Title</h2><h2>Section A</h2><h2>Cookie Policy</h2></body></html>"
-    res = pp.parse_page(html, url=_DISCOVER_URL)
-    assert res.source_used == "dom" and res.products[0].title == "Real Title"
-    assert res.products[0].section_count == 1, "the title h2 and the site's Cookie Policy h2 are not sections"
+    html = f"<html><head>{_LIVE_OG_DEFAULTS}</head><body>{_APP_SHELL}<h2>OpenAI unveils Dots</h2><h2>What Dots Can Do</h2></body></html>"
+    res = pp.parse_page(html, url="https://www.perplexity.ai/discover/top/does-not-exist-AAAAAAAAAAAAAAAAAAAAAA")
+    assert res.products == [] and res.source_used == "none"
+    assert pp.count_result_cards(html) == 1, "the page DID render — that is all the HTML may say"
+    assert not hasattr(pp, "_parse_page_from_dom") and not hasattr(pp, "extract_og_meta")
 
 
 @check("the DOM fallback refuses a Cloudflare interstitial: the REAL captured challenge page yields no row (live, a local run once reported 'Performing security verification' as an article)")
@@ -565,13 +565,13 @@ def _():
     assert not pp.is_app_page(block)
 
 
-@check("parse_page prefers the API payload over the HTML, and falls back to the HTML only when the payload is unusable")
+@check("parse_page returns a row only from a successful API payload")
 def _():
     data = _fixture_json("perplexity_article_discover_live_20260930.json")
     html = f"<html><body>{_APP_SHELL}<h2>DOM Title</h2></body></html>"
     assert pp.parse_page(html, url=_DISCOVER_URL, article_json=data).source_used == "api"
-    assert pp.parse_page(html, url=_DISCOVER_URL, article_json={"detail": "x"}).source_used == "dom"
-    assert pp.parse_page("<html></html>", url=_DISCOVER_URL).source_used == "none"
+    assert pp.parse_page(html, url=_DISCOVER_URL, article_json={"detail": "x"}).source_used == "none"
+    assert pp.parse_page(html, url=_DISCOVER_URL).source_used == "none"
 
 
 @check("safe_parse_page degrades a bad page instead of crashing the whole batch")
@@ -585,7 +585,7 @@ def _():
     assert res.products == [] and res.source_used == "none"
 
 
-@check("page_flow.decide: the five live outcomes — api row, dom row (degraded), 400 = not_found (not blocked), challenge = blocked (never parsed), HTTP 403 with nothing = blocked")
+@check("page_flow.decide: the live outcomes — api row; API refused = NO row (blocked on 401/403/429); 400 = not_found (not blocked); challenge = blocked (never parsed); and the API-retry policy")
 def _():
     data = _fixture_json("perplexity_article_discover_live_20260930.json")
     app = f"<html><body>{_APP_SHELL}<h2>DOM Title</h2></body></html>"
@@ -595,7 +595,11 @@ def _():
     assert o.product and o.source_used == "api" and not o.blocked and not o.warnings
 
     o = page_flow.decide(url=_DISCOVER_URL, http_status=200, html=app, api_status=403, article_json=None, api_error="not JSON")
-    assert o.product and o.source_used == "dom" and not o.blocked and len(o.warnings) == 2
+    assert o.product is None and o.blocked, "a rendered page with a refused API is not a row"
+
+    assert page_flow.should_retry_api(403, "not JSON") and page_flow.should_retry_api(0, "fetch failed")
+    assert not page_flow.should_retry_api(400, None) and not page_flow.should_retry_api(200, None)
+    assert sum(page_flow.API_RETRY_DELAYS_S) >= 12, "live: 403 at ~3s, 200 only at ~12s on a fresh profile"
 
     o = page_flow.decide(url=_DISCOVER_URL, http_status=200, html=app, api_status=400, article_json={"detail": "x"}, api_error=None)
     assert o.not_found and not o.blocked and o.product is None

@@ -108,7 +108,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--urls-file", default=None)
     p.add_argument("--discover", default=None, metavar="TOPIC", help="Scrape the Discover feed for TOPIC ('top'), up to --max-results articles")
     p.add_argument("--max-results", type=_positive_int, default=30)
-    p.add_argument("--delay-between-pages", type=float, default=1.0)
+    p.add_argument("--delay-between-pages", type=float, default=2.0)
     p.add_argument("--format", choices=["json", "csv"], default="json")
     p.add_argument("--out", default=None)
     p.add_argument("--retries", type=int, default=2)
@@ -315,6 +315,12 @@ def scrape_one_page(
     api_status, article_json, api_error = (0, None, "skipped: page is a bot challenge")
     if not page_flow.is_challenge(html):
         api_status, article_json, api_error = _fetch_json(driver, pp.article_api_url(ref))
+        for delay in page_flow.API_RETRY_DELAYS_S:
+            if not page_flow.should_retry_api(api_status, api_error):
+                break
+            log.info("%s: article API HTTP %s — retrying in %ss (a fresh profile needs the page's own bot check first).", url, api_status or "-", delay)
+            time.sleep(delay)
+            api_status, article_json, api_error = _fetch_json(driver, pp.article_api_url(ref))
     outcome = page_flow.decide(url=url, http_status=status, html=html, api_status=api_status,
                                article_json=article_json, api_error=api_error)
     for message in outcome.warnings:

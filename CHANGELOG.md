@@ -9,6 +9,24 @@ rather than being a silent violation of that.
 
 ## [Unreleased]
 
+### Changed — 2026-09-30, second live profile: no rows from HTML, API retry, slower default pace
+- **The HTML fallback is gone.** A dead URL (API 400) rendered the
+  previously viewed article's full title and sections, and no article id
+  appears in the HTML, so the earlier run wrote a row for a nonexistent
+  article carrying another article's title. With no API answer there is
+  now no row: blocked on 401/403/429, otherwise "no article read".
+  `_parse_page_from_dom` and `extract_og_meta` are removed.
+- **API retry**: a fresh profile's first `/rest/article/` call got 403
+  (~3s after load) and 200 at ~12s; a burst of 13 articles 0.5s apart got
+  403 on every later call. All three engines retry a refused call after
+  3, 5, 8 and 15s (`page_flow.API_RETRY_DELAYS_S`).
+- `--delay-between-pages` defaults to 2s (was 1s). At the defaults, the
+  profile that throttled at 0.5s did `--discover top --max-results 25`
+  25/25.
+- Verified live on that profile: Playwright and Puppeteer on the 3-URL
+  set (2 rows plus `page_not_found`) and Discover (5 and 25), all
+  `complete`.
+
 ### Changed — 2026-09-30, rebuilt on the first live capture of real articles
 - Recon through a US Scraping Browser API profile over CDP (HTTP 200, no
   Cloudflare challenge) replaced every guessed selector with confirmed

@@ -10,7 +10,8 @@
 | Puppeteer | the same 3 URLs; `--discover top --max-results 5` | same rows, exit 0 |
 | Playwright, local headless and headful | 1-2 URLs | Cloudflare challenge never cleared → exit 3 |
 | Selenium, local headless | 1 URL | Cloudflare challenge → exit 3 |
-| Selenium, headful via US residential proxy | 3 URLs | page served, API 403 → HTML-only rows (title, sections) |
+| Selenium, headful via US residential proxy | 3 URLs | page served, API 403 (HTML-only rows at the time; the HTML path was since removed) |
+| Playwright + Puppeteer, a second fresh profile | 3 URLs; Discover 5 and 25 (default 2s delay) | all complete, 25/25; at 0.5s delay the API throttled after 13 |
 
 Still open: a local run that Cloudflare lets through, and Selenium
 against the article API.
@@ -22,8 +23,9 @@ python3 playwright_scraper.py --discover top --max-results 5 --out /tmp/pplx.jso
 cat /tmp/pplx.json.meta.json        # status: complete, product_count: 5
 ```
 
-A warning "parsed from the rendered HTML only" means the article API was
-refused — rows are then thin. "served a bot challenge that did not clear"
+"article API HTTP 403 — retrying" is normal on a fresh profile's first
+article. If it ends in "blocked", the API is throttling: raise
+`--delay-between-pages`. "served a bot challenge that did not clear"
 means Cloudflare blocked this browser; switch to `--cdp-endpoint`.
 
 Run everything below from a normal terminal on your own machine — wherever

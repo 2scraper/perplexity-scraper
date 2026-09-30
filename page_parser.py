@@ -38,13 +38,14 @@ What the site actually is today:
     `/rest/discover/topics` (tech, finance, arts, sports, entertainment)
     returned zero items for an anonymous visitor on 2026-09-30.
 
-Extraction order, most trustworthy first:
-
-  1. `parse_article_json()` — the `/rest/article/` payload. Primary.
-  2. `_parse_page_from_dom()` — the rendered HTML: the article title is
-     the first `<h2>` (there is no `<h1>`), section titles are the rest.
-     Much thinner (no counters, no sources); used only when the API
-     payload could not be fetched.
+Extraction: `parse_article_json()` on the `/rest/article/` payload, and
+nothing else. The rendered HTML is NOT a fallback, for a measured reason:
+a dead URL (the API answered 400) rendered the previously viewed
+article's title and sections in full, and no article id appears anywhere
+in the HTML to tell the two apart. A row built from it could carry
+another article's title under this URL's sku. The HTML is only used to
+tell "the app rendered" from "a challenge page" (`is_app_page`,
+`count_result_cards`).
 """
 from __future__ import annotations
 
@@ -108,8 +109,6 @@ def is_app_page(html: str) -> bool:
     return (html or "").count(APP_ASSET_MARKER) >= _MIN_APP_ASSET_HITS
 
 
-# Site-default OG values (identical on every page, live 2026-09-30).
-_DEFAULT_OG_TITLES = {"perplexity"}
 # Headings the site renders around every article, never article content.
 _CHROME_HEADINGS = {"cookie policy"}
 
@@ -187,7 +186,7 @@ def make_sku(*, page_id: Optional[str], url: Optional[str]) -> str:
 
 
 # --------------------------------------------------------------------------- #
-# Path 1: the /rest/article/ payload
+# The /rest/article/ payload
 # --------------------------------------------------------------------------- #
 def _entry_text(entry: dict) -> dict:
     raw = entry.get("text")
@@ -316,24 +315,8 @@ def parse_discover_feed(data: Any, *, topic: str) -> tuple:
 
 
 # --------------------------------------------------------------------------- #
-# Path 2: rendered-HTML fallback (see module docstring for what it lacks)
+# Rendered HTML: only "did the app render" — never a source of row data
 # --------------------------------------------------------------------------- #
-def extract_og_meta(html: str) -> dict:
-    """Open Graph values, EXCLUDING the site-wide defaults every page
-    carries — an empty dict on today's site."""
-    soup = BeautifulSoup(html, "html.parser")
-    out: dict = {}
-    for prop, key in (("og:title", "title"), ("og:image", "image"), ("og:url", "url")):
-        tag = soup.find("meta", attrs={"property": prop}) or soup.find("meta", attrs={"name": prop})
-        if tag and tag.get("content"):
-            out[key] = tag["content"].strip()
-    if (out.get("title") or "").strip().lower() in _DEFAULT_OG_TITLES:
-        return {}
-    if out.get("url") and urlparse(out["url"]).path in ("", "/"):
-        out.pop("url")
-    return out
-
-
 def _headings(soup: BeautifulSoup) -> List[str]:
     heads = []
     for h in soup.select("h2"):
@@ -352,55 +335,23 @@ def count_result_cards(html: str) -> int:
     return 1 if _headings(BeautifulSoup(html, "html.parser")) else 0
 
 
-def _parse_page_from_dom(html: str, *, source_url: str) -> Optional[Product]:
-    if not is_app_page(html):
-        return None
-    soup = BeautifulSoup(html, "html.parser")
-    heads = _headings(soup)
-    og = extract_og_meta(html)
-    title = og.get("title") or (heads[0] if heads else None)
-    if not title:
-        return None
-    topic, _ref = article_ref(source_url)
-    slug, page_id = parse_page_ref(source_url)
-    return Product(
-        sku=make_sku(page_id=page_id, url=source_url),
-        source=SOURCE,
-        category=topic,
-        title=title,
-        brand=None,
-        price=None,
-        currency=None,
-        price_source=None,
-        product_url=og.get("url") or source_url,
-        image_url=og.get("image"),
-        scraped_at=_now_iso(),
-        # The first <h2> is the article title itself; the rest are its
-        # sections (live: 15 h2 vs 14 API entries, 5 vs 4).
-        section_count=(len(heads) - 1) if not og.get("title") and len(heads) > 1 else None,
-        slug=f"{slug}-{page_id}" if slug and page_id else slug,
-    )
-
-
 # --------------------------------------------------------------------------- #
 # Entry point
 # --------------------------------------------------------------------------- #
 @dataclass
 class PageResult:
     products: List[Product]
-    source_used: str  # "api" | "dom" | "none"
+    source_used: str  # "api" | "none"
 
 
 def parse_page(html: str, *, url: str, article_json: Any = None) -> PageResult:
-    """Zero or one Product for one URL. `article_json` is the engine's
-    `/rest/article/` payload (already decoded), when it got one."""
+    """Zero or one Product for one URL, from the engine's decoded
+    `/rest/article/` payload. `html` is accepted for signature parity and
+    deliberately not parsed — see the module docstring."""
     if article_json is not None:
         product = parse_article_json(article_json, url=url)
         if product is not None:
             return PageResult(products=[product], source_used="api")
-    product = _parse_page_from_dom(html or "", source_url=url)
-    if product is not None:
-        return PageResult(products=[product], source_used="dom")
     return PageResult(products=[], source_used="none")
 
 

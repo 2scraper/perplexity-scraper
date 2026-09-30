@@ -35,11 +35,12 @@ What the live capture established (details in `page_parser.py`):
   image. The engines open the article page (so the browser holds the
   site's cookies) and call that same endpoint with `fetch()` from inside
   the page.
-- **The HTML is nearly empty of data.** No JSON-LD, and the Open Graph tags
-  are the site-wide defaults on every page (`og:title` "Perplexity"). The
-  HTML fallback reads only the title and section headings, and refuses
-  any page not built from the app's own assets — a Cloudflare interstitial
-  once came out as an article titled "Performing security verification".
+- **The HTML is never used as row data.** No JSON-LD; the Open Graph tags
+  are the site-wide defaults on every page (`og:title` "Perplexity"); and
+  a DEAD URL rendered the previously viewed article's full headings, with
+  no article id anywhere in the HTML to tell them apart. A title read
+  from the HTML could belong to another article, so when the API does not
+  answer there is no row (the run says blocked or empty instead).
 - **Both URL kinds work.** Old `/page/{slug}-{id}` links still resolve
   (the app rewrites them to `/page/{uuid}`); new articles live at
   `/discover/{topic}/{slug}-{id}`. The 22-character id is the stable
@@ -52,8 +53,12 @@ What the live capture established (details in `page_parser.py`):
   Mac, headless or headful, stayed on a managed challenge (Playwright,
   Selenium and pyppeteer alike); runs honestly exit `3`. Through a US
   residential proxy, a headful Selenium Chrome got the page but the API
-  answered 403, so rows came from the HTML only (title and section count).
-  **Use `--cdp-endpoint` for real work.**
+  answered 403. **Use `--cdp-endpoint` for real work.**
+- **The API throttles bursts.** 13 articles 0.5s apart, then 403 on every
+  call for a few minutes. `--delay-between-pages` now defaults to 2s, and
+  a refused API call is retried after 3, 5, 8 and 15s (a fresh profile
+  also needs ~10s before its first call succeeds). At the defaults, 25/25
+  on the same profile.
 
 ## Recommended setup
 
@@ -175,9 +180,7 @@ string (`[{"url", "title"}]`) so a CSV row stays flat. `summary` exists
 for Discover articles only. `follow_up_question_count` was removed on
 2026-09-30: nothing the site serves carries it.
 
-A row built from the HTML fallback has only `sku`, `title`, `category`,
-`product_url`, `section_count` and `slug`, and the run logs that it was
-degraded. `sample_output.json` / `sample_output.csv` are real rows from
+Every row comes from the article API. `sample_output.json` / `sample_output.csv` are real rows from
 the 2026-09-30 live run.
 
 **Exit codes**: `0` complete · `1` crash · `2` bad usage · `3` blocked ·
@@ -198,11 +201,12 @@ being present never launders a blocked/remote-API-error run into
 1. Open the article URL and wait for it to settle. If it is a Cloudflare
    challenge, wait up to 15s for it to clear by itself, then try the
    2Captcha solver when a key is set.
-2. Call `/rest/article/{ref}` with `fetch()` from inside the page.
+2. Call `/rest/article/{ref}` with `fetch()` from inside the page; on a
+   refusal, retry after 3, 5, 8 and 15s.
 3. `page_flow.decide()` turns what was seen into one outcome, identically
-   for all three engines: an API row; an HTML-fallback row (logged as
-   degraded); not found (API 400, no row, not a block); or blocked (a
-   challenge that never cleared, or HTTP 4xx with nothing usable).
+   for all three engines: an API row; not found (API 400, no row, not a
+   block); blocked (a challenge that never cleared, or the API still
+   refusing); or nothing read.
 
 A URL that fails navigation after `--retries` goes into `failed_pages` and
 the run is `partial` (exit 6) if others succeeded. `--discover TOPIC`
@@ -245,7 +249,10 @@ site):
   articles published within the last day in the live capture.
 - **Live Q&A answers are out of scope.** Only published articles are read.
 - **Selenium cannot use the Browser API** and was only run locally, where
-  it was blocked, or got HTML-only rows through a residential proxy.
+  Cloudflare or the API refused it.
+- **One Browser API connection per profile.** Starting a second run right
+  after the first can time out (60s, exit 5) while the provider releases
+  the previous session; wait a little and rerun.
 - **Solving Cloudflare's challenge page locally is not implemented.** Over
   `--cdp-endpoint` the Browser API handles Cloudflare itself.
 

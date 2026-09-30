@@ -4,13 +4,16 @@ three engines (CLAUDE.md §1: three copies of this triage would drift, and
 the drift would be silent — one engine reporting exit 3 where its twin
 reports 0 on the same page).
 
-perplexity.ai answers an article request five ways, all seen live on
+perplexity.ai answers an article request these ways, all seen live on
 2026-09-30:
 
   1. the app page, and `/rest/article/{ref}` returns the article JSON → a
      full row (`source_used="api"`);
-  2. the app page, but the API call failed → a thin row from the rendered
-     HTML (`"dom"`), logged as degraded;
+  2. the app page, but the API call keeps failing → NO row. The rendered
+     HTML is not evidence of WHICH article it is: a dead URL rendered the
+     previously viewed article's headings in full, and the HTML carries
+     no id to check against. A row with another article's title is worse
+     than no row (CLAUDE.md §8, "fail loudly");
   3. the app page, and the API answers 400 → the article does not exist
      (`not_found`): no row, not a block, never retried harder;
   4. a Cloudflare managed challenge that never cleared (local Chromium,
@@ -32,6 +35,19 @@ from output_writer import Product
 
 BLOCKING_API_STATUSES = (401, 403, 429)
 NOT_FOUND_API_STATUSES = (400, 404)
+# /rest/ answers 403 in two live situations: a fresh profile before the
+# page's own bot check has issued cf_clearance (403 at ~3s, 200 at ~12s),
+# and a burst — 13 articles at 0.5s apart, then 403 on every call until
+# the profile was left alone for a few minutes. The engines retry the API
+# call after each of these pauses; the long last one is for the burst.
+API_RETRY_DELAYS_S = (3, 5, 8, 15)
+
+
+def should_retry_api(status: int, error: Optional[str]) -> bool:
+    """Worth another try after a pause: refused or unreadable, not "no such article"."""
+    if status in NOT_FOUND_API_STATUSES or (status == 200 and not error):
+        return False
+    return status in BLOCKING_API_STATUSES or status == 0 or bool(error)
 
 
 def is_challenge(html: str) -> bool:
@@ -64,19 +80,15 @@ def decide(
         return Outcome(None, True, False, "none",
                        [f"{url}: served a bot challenge that did not clear — blocked."])
 
-    if api_error:
-        warnings.append(f"{url}: article API HTTP {api_status or '-'}, {api_error} — falling back to the rendered HTML.")
     result = pp.safe_parse_page(html, url=url, article_json=None if api_error else article_json)
-    product = result.products[0] if result.products else None
-
+    product = result.products[0] if result.source_used == "api" else None
     if product is not None:
-        if result.source_used != "api":
-            warnings.append(f"{url}: parsed from the rendered HTML only (no counters, no sources).")
-        return Outcome(product, False, False, result.source_used, warnings)
+        return Outcome(product, False, False, "api", warnings)
 
+    detail = f"article API HTTP {api_status or '-'}" + (f", {api_error}" if api_error else "")
     if (http_status is not None and http_status >= 400) or api_status in BLOCKING_API_STATUSES:
-        warnings.append(f"{url}: HTTP {http_status or '-'} / article API {api_status or '-'} with no content — blocked, not empty.")
+        warnings.append(f"{url}: {detail} — blocked, not empty.")
         return Outcome(None, True, False, "none", warnings)
 
-    warnings.append(f"{url}: nothing recognised. Re-run with --dump-html to inspect the captured page.")
+    warnings.append(f"{url}: {detail} — no article read. Re-run with --dump-html to inspect the captured page.")
     return Outcome(None, False, False, "none", warnings)
