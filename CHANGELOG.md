@@ -9,6 +9,17 @@ rather than being a silent violation of that.
 
 ## [Unreleased]
 
+### Changed — 2026-09-30, canary on the Browser API; honest setup badge
+- `canary.yml`: the local-browser job is removed. Cloudflare blocked every
+  local browser tried, so it could only ever be red. The remaining job
+  runs over `PERPLEXITY_CDP_ENDPOINT`: `--discover top --max-results 5`
+  (>= 3 rows) plus one known Page, and requires `complete` with rows only
+  the article API fills (sections, sources, `published_at`). It skips
+  with a notice when the secret is absent. The check script was dry-run
+  against real outputs from the live runs: pass on a good run, red on
+  exit 3.
+- README: the `local-first: yes` badge became `setup: Browser API (CDP)`.
+
 ### Changed — 2026-09-30, second live profile: no rows from HTML, API retry, slower default pace
 - **The HTML fallback is gone.** A dead URL (API 400) rendered the
   previously viewed article's full title and sections, and no article id

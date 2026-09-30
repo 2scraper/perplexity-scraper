@@ -194,8 +194,8 @@ git push --tags
 Then, in the GitHub repo's Settings:
 
 - **Secrets and variables → Actions**: add `TWOCAPTCHA_KEY`,
-  `PERPLEXITY_CDP_ENDPOINT` (only if you want the `canary-cdp` job using
-  it — `canary-local` needs no secrets at all), and
+  `PERPLEXITY_CDP_ENDPOINT` (the canary SKIPS without it — there is no
+  local-browser canary, since Cloudflare blocks local browsers), and
   `CLAUDE_CODE_OAUTH_TOKEN` (for `claude.yml` / `claude-code-review.yml` —
   both silently no-op without it, by design, rather than failing every
   PR check). Optionally set the `PERPLEXITY_CANARY_URL` repo/org

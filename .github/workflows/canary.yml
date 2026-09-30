@@ -6,90 +6,32 @@ on:
   workflow_dispatch: {}     # dispatch manually at least once before trusting the badge
 
 jobs:
-  # A real local-first browser run against ONE real Page URL. Blocked,
-  # empty, partial, and remote-error outcomes are red: a canary that
-  # accepts them cannot detect selector regressions.
+  # A real run over the 2Captcha Scraping Browser API — the only setup that
+  # scraped this site live (2026-09-30). There is no local-browser job:
+  # Cloudflare blocked every local browser tried, so such a job would be
+  # red every day and could never signal a regression.
   #
-  # Unlike every sibling repo's canary (a repeatable SEARCH that always
-  # returns something), this site has no search to fall back on (see
-  # page_parser.py's module docstring) — a canary here can only re-fetch
-  # one SPECIFIC Page, and that Page can be edited or deleted by its
-  # author at any time, which would fail this job for a reason that has
-  # nothing to do with a regression in this repo. `vars.PERPLEXITY_CANARY_URL`
-  # (a repo/org Actions variable, not a secret — it's just a URL) lets a
-  # maintainer swap in a Page they control without editing this file;
-  # falls back to the one real example URL found during this repo's
-  # initial research if no variable is set. If this job goes red, check
-  # whether the Page itself still exists before assuming page_parser.py
-  # broke.
-  canary-local:
-    runs-on: ubuntu-latest
-    env:
-      CANARY_URL: ${{ vars.PERPLEXITY_CANARY_URL || 'https://www.perplexity.ai/page/How-to-Generate-VzUTuvQVSIqru3QGvPihlg' }}
-    steps:
-      - uses: actions/checkout@v4
-      - uses: actions/setup-python@v5
-        with:
-          python-version: "3.12"
-      - run: |
-          pip install -r requirements-playwright.txt
-          playwright install --with-deps chromium
-
-      - name: Run the local-first default against one real Page
-        run: |
-          set +e
-          python3 playwright_scraper.py \
-            --url "$CANARY_URL" --format json --out canary_out.json --dump-html
-          echo "exit_code=$?" >> "$GITHUB_ENV"
-
-      - name: Require a complete, non-empty result
-        run: |
-          python3 -c "
-          import json, os
-
-          code = int(os.environ['exit_code'])
-          print(f'playwright_scraper.py exited {code}')
-
-          if code != 0:
-              raise SystemExit(f'canary requires EXIT_OK=0, got {code}')
-          meta = json.load(open('canary_out.json.meta.json'))
-          print(json.dumps(meta, indent=2))
-          assert meta['status'] == 'complete', meta
-          assert meta['pages_completed'] == 1, meta
-          assert meta['product_count'] == 1, meta
-          print('canary: fetched and parsed the one Page OK')
-          "
-
-      - name: Upload artifacts (output + debug HTML) on every run
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: canary-local-${{ github.run_id }}
-          path: |
-            canary_out.json
-            canary_out.json.meta.json
-            canary_out_debug_1.html
-          retention-days: 14
-
-  # Opt-in, mirroring the rest of the family's pattern: exercises the
-  # --cdp-endpoint (2Captcha Scraping Browser API) path when a repo secret
-  # is configured. Skips cleanly — not red — when it isn't.
+  # Two inputs, so one deleted article cannot turn the job red on its own:
+  #   1. `--discover top --max-results 5` — the live feed, always fresh;
+  #   2. one known classic Page (`vars.PERPLEXITY_CANARY_URL` overrides it).
+  # Blocked, empty, partial and remote-error outcomes are red. Without the
+  # PERPLEXITY_CDP_ENDPOINT secret the job SKIPS with a notice — not red.
   canary-cdp:
     runs-on: ubuntu-latest
     env:
       HAS_CDP: ${{ secrets.PERPLEXITY_CDP_ENDPOINT != '' }}
       CANARY_URL: ${{ vars.PERPLEXITY_CANARY_URL || 'https://www.perplexity.ai/page/How-to-Generate-VzUTuvQVSIqru3QGvPihlg' }}
+      PERPLEXITY_CDP_ENDPOINT: ${{ secrets.PERPLEXITY_CDP_ENDPOINT }}
+      TWOCAPTCHA_KEY: ${{ secrets.TWOCAPTCHA_KEY }}
     steps:
       - uses: actions/checkout@v4
 
       - name: Skip — no PERPLEXITY_CDP_ENDPOINT secret configured
         if: env.HAS_CDP != 'true'
         run: |
-          echo "::notice::Skipping the Scraping Browser API run: no PERPLEXITY_CDP_ENDPOINT \
-          secret is set. This is optional — canary-local above already exercises this repo's \
-          local-first default with no secrets at all. Set PERPLEXITY_CDP_ENDPOINT (and \
-          TWOCAPTCHA_KEY) as repo secrets to also turn this job on. This is a SKIP, not a pass \
-          or a fail."
+          echo "::notice::Skipping: no PERPLEXITY_CDP_ENDPOINT secret. Set it (a Scraping \
+          Browser API ws:// URL) as a repo secret to turn the canary on. This is a SKIP, \
+          not a pass or a fail."
 
       - uses: actions/setup-python@v5
         if: env.HAS_CDP == 'true'
@@ -98,18 +40,54 @@ jobs:
       - run: pip install -r requirements-playwright.txt
         if: env.HAS_CDP == 'true'
 
-      # Both secrets go through the ENVIRONMENT, never a command-line flag
-      # (credentials never reach argv). env_config.py already reads
-      # PERPLEXITY_CDP_ENDPOINT/TWOCAPTCHA_KEY unconditionally, so this is
-      # correct with or without either secret set.
-      - name: Run over the Scraping Browser API
+      # Credentials reach the scraper through the environment only, never
+      # argv (env_config.py reads PERPLEXITY_CDP_ENDPOINT / TWOCAPTCHA_KEY).
+      - name: Discover feed, 5 articles
         if: env.HAS_CDP == 'true'
-        env:
-          PERPLEXITY_CDP_ENDPOINT: ${{ secrets.PERPLEXITY_CDP_ENDPOINT }}
-          TWOCAPTCHA_KEY: ${{ secrets.TWOCAPTCHA_KEY }}
         run: |
-          python3 playwright_scraper.py \
-            --url "$CANARY_URL" --format json --out canary_cdp_out.json --dump-html
+          set +e
+          python3 playwright_scraper.py --discover top --max-results 5 \
+            --format json --out canary_discover.json --dump-html
+          echo "discover_exit=$?" >> "$GITHUB_ENV"
+
+      # One Browser API connection per profile: give the provider a moment
+      # to release the first session before the second run connects.
+      - name: One known Page
+        if: env.HAS_CDP == 'true'
+        run: |
+          set +e
+          sleep 20
+          python3 playwright_scraper.py --url "$CANARY_URL" \
+            --format json --out canary_page.json --dump-html
+          echo "page_exit=$?" >> "$GITHUB_ENV"
+
+      - name: Require complete runs with full API rows
+        if: env.HAS_CDP == 'true'
+        run: |
+          python3 -c "
+          import json, os
+
+          def check(name, out, minimum):
+              code = int(os.environ[name])
+              print(f'{out}: exit {code}')
+              if code != 0:
+                  raise SystemExit(f'{out}: canary requires EXIT_OK=0, got {code}')
+              meta = json.load(open(out + '.meta.json'))
+              print(json.dumps(meta, indent=2))
+              assert meta['status'] == 'complete', meta
+              rows = json.load(open(out))
+              assert len(rows) >= minimum, f'{out}: {len(rows)} rows, need >= {minimum}'
+              for r in rows:
+                  # Only the article API fills these; a regression to an
+                  # empty or HTML-shaped row shows up here first.
+                  assert r['sku'].startswith('perplexity-') and r['title'], r
+                  assert r['section_count'] and r['sources_json'] is not None, r
+                  assert r['published_at'], r
+
+          check('discover_exit', 'canary_discover.json', 3)
+          check('page_exit', 'canary_page.json', 1)
+          print('canary: OK')
+          "
 
       - name: Upload artifacts on every non-skipped run
         if: always() && env.HAS_CDP == 'true'
@@ -117,7 +95,6 @@ jobs:
         with:
           name: canary-cdp-${{ github.run_id }}
           path: |
-            canary_cdp_out.json
-            canary_cdp_out.json.meta.json
-            canary_cdp_out_debug_1.html
+            canary_*.json
+            canary_*_debug_*.html
           retention-days: 14

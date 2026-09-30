@@ -6,7 +6,7 @@
 ![python](https://img.shields.io/badge/python-3.9%2B-blue)
 ![licence](https://img.shields.io/badge/licence-MIT-green)
 ![engines](https://img.shields.io/badge/engines-Playwright%20%7C%20Selenium%20%7C%20Puppeteer-informational)
-![local-first](https://img.shields.io/badge/local--first-yes-success)
+![setup](https://img.shields.io/badge/setup-Browser%20API%20%28CDP%29-informational)
 
 A [Perplexity](https://www.perplexity.ai/) article scraper: classic Pages
 (`/page/...`) and Discover articles (`/discover/{topic}/...`) in — one URL,
