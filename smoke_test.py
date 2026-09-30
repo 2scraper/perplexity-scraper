@@ -170,6 +170,9 @@ def _():
     pup = (ROOT / "puppeteer_scraper.py").read_text(encoding="utf-8")
     assert "await browser.disconnect()" in pup and "_release(remote_browser, remote=True)" in pup
     assert "get_event_loop().run_until_complete" not in pup, "asyncio.get_event_loop() crashes once a loop was closed"
+    assert "asyncio.wait_for(\n                pyppeteer_connect(" in pup and "CDP_CONNECT_TIMEOUT_S" in pup, (
+        "pyppeteer's connect() has no timeout — a rejected handshake hung the run live"
+    )
 
 
 @check("engines never request a robots.txt-disallowed path — _resolve_urls filters it out")

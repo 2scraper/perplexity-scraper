@@ -44,6 +44,8 @@ rather than being a silent violation of that.
   a Russian-locale browser's language live.
 - Playwright over CDP reuses the profile's default context (keeps its
   cookies), as shein-scraper needed.
+- pyppeteer: `connect()` is now bounded (60s). Live, a Browser API
+  handshake refused with 401 hung the run forever; it now exits 5.
 - pyppeteer: over CDP, one connection per run is DISCONNECTED, never
   closed (`close()` ended the remote session). `asyncio.run()` replaces
   `get_event_loop()`. Its "Target closed" / "No session with given id"

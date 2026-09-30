@@ -65,6 +65,7 @@ NAV_TIMEOUT_MS = 45_000
 READINESS_WAIT_S = 3.0
 API_TIMEOUT_MS = 30_000
 CHALLENGE_WAIT_S = 15
+CDP_CONNECT_TIMEOUT_S = 60
 
 _FETCH_JS = """
 async (u, timeoutMs) => {
@@ -163,8 +164,14 @@ def _dump_path(out_path: str, index: int) -> str:
 
 async def _launch(*, headless: bool, proxy: Optional[Proxy], cdp_endpoint: Optional[str]):
     if cdp_endpoint:
+        # pyppeteer's connect() has no timeout of its own: a rejected
+        # handshake (live: 401 from the Browser API) hung the run forever.
         try:
-            return await pyppeteer_connect(browserWSEndpoint=cdp_endpoint, defaultViewport=None)
+            return await asyncio.wait_for(
+                pyppeteer_connect(browserWSEndpoint=cdp_endpoint, defaultViewport=None), CDP_CONNECT_TIMEOUT_S,
+            )
+        except asyncio.TimeoutError:
+            raise RuntimeError(f"CDP connection timed out after {CDP_CONNECT_TIMEOUT_S}s") from None
         except Exception as exc:
             raise RuntimeError(f"CDP connection failed: {redact_credentials(str(exc))}") from None
     args = ["--no-sandbox", "--disable-dev-shm-usage", "--lang=en-US"]  # see selenium_scraper: titles follow the browser language
