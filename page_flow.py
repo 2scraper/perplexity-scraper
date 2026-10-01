@@ -318,7 +318,7 @@ async def run(engine: Engine, args, *, urls: List[str], discover_topic: Optional
     completed = 0
     batch = [] if remote_api_error else urls[: args.max_results]
     for i, url in enumerate(batch, start=1):
-        product, blocked, nav_failed, _not_found = await fetch_article(engine, args, url, i, proxy_pool, client)
+        product, blocked, nav_failed, not_found = await fetch_article(engine, args, url, i, proxy_pool, client)
         if nav_failed:
             failed_pages.append(i)
         else:
@@ -326,6 +326,10 @@ async def run(engine: Engine, args, *, urls: List[str], discover_topic: Optional
             any_blocked = any_blocked or blocked
             if product is not None:
                 products.append(product)
+            elif not blocked and not not_found and getattr(engine, "last_remote_error", False):
+                # Nothing read because the fetch service itself failed
+                # (scraper_api_engine), not because the site had nothing.
+                remote_api_error = True
         if i < len(batch):
             await engine.sleep(args.delay_between_pages)
     return finish(args, products=products, blocked=any_blocked, remote_api_error=remote_api_error,

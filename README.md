@@ -26,8 +26,9 @@ and Discover articles (`/discover/{topic}/...`).
   exit code and a `.meta.json` file next to the output. A run that finds
   nothing never overwrites your last good data.
 - **Three browser engines** (Playwright, Puppeteer, Selenium) running one
-  shared fetch loop, 2Captcha's **Scraping Browser API** over CDP,
-  rotating proxies, and a run-to-run diff tool.
+  shared fetch loop, 2Captcha's **Scraping Browser API** over CDP, a
+  browserless **Scraper API** mode, rotating proxies, and a run-to-run
+  diff tool.
 
 ## Quick start
 
@@ -51,6 +52,10 @@ its challenge page; the Browser API gets through.
 `python3 env_config.py` shows what was picked up, without printing
 secrets.
 
+**No browser at all:** add `TWOCAPTCHA_KEY` and pass `--scraper-api`.
+Each article is then one 2Captcha Scraper API call routed through the
+same profile; nothing has to be installed beyond `requirements.txt`.
+
 ## Examples
 
 ```bash
@@ -65,6 +70,9 @@ python3 playwright_scraper.py --urls-file articles.txt
 
 # the same with Puppeteer
 python3 puppeteer_scraper.py --discover top --max-results 20
+
+# without a browser: 2Captcha's Scraper API through the same profile
+python3 playwright_scraper.py --scraper-api --discover top --max-results 20
 
 # compare two runs
 python3 diff_runs.py monday.json tuesday.json
@@ -133,6 +141,26 @@ A real row from a run on 2026-09-30 (`sample_output.json` has two;
 `--max-results`, then fetches each article this way, `--delay-between-pages`
 apart (2s; at 0.5s the API throttled after 13 articles).
 
+## Scraper API mode
+
+With `--scraper-api`, no browser is driven: the feed and every
+`/rest/article/` call go through 2Captcha's Scraper API, routed through
+the Scraping Browser profile in `PERPLEXITY_CDP_ENDPOINT`. Step 1 above is
+skipped; retries, parsing, exit codes and the `.meta.json` are the same
+(`engine: scraper_api`). It needs both `TWOCAPTCHA_KEY` and
+`PERPLEXITY_CDP_ENDPOINT`, and works with any of the three scripts, none
+of their drivers required.
+
+Measured on 2026-10-01: through the profile, a 10-article Discover run
+was complete in 71s; on the Scraper API's own pool every request got
+Cloudflare's challenge, which is why the profile is required. A refused
+key or an empty balance stops the run at once with exit 5.
+`--proxy`, `--fingerprint` and `--dump-html` do not apply.
+
+Both modes share the profile's rate limit: right after about 20 Scraper
+API calls, a browser run on the same profile got API 403 for a few
+minutes, then worked again.
+
 ## Run results and exit codes
 
 Every run writes `<out>` and `<out>.meta.json` (status, `stop_reason`,
@@ -147,7 +175,7 @@ previous good file.
 | `6` | partial: rows were written, but the run did not finish cleanly — `stop_reason` says why (`blocked`, `rate_limited`, `remote_api_error`, `failed_pages`, `rejected_rows`) |
 | `3` | blocked or throttled, no rows |
 | `4` | nothing read and nothing blocked (e.g. a Discover topic with no items) |
-| `5` | a remote service failed (e.g. the Scraping Browser connection), no rows |
+| `5` | a remote service failed (the Scraping Browser connection, the Scraper API, the 2Captcha key or balance), no rows |
 | `2` | bad usage, including input where every URL was skipped |
 | `1` | crash (a bug; please report it) |
 
@@ -173,6 +201,7 @@ the command line.
 | `--delay-between-pages` | 2s | pause between articles and between feed pages |
 | `--format` / `--out` | json / `perplexity_results.<format>` | output format and path |
 | `--cdp-endpoint` | `PERPLEXITY_CDP_ENDPOINT` | connect to a Scraping Browser API profile instead of launching a browser |
+| `--scraper-api` | off | no browser: fetch through 2Captcha's Scraper API, routed through that profile (needs `TWOCAPTCHA_KEY`) |
 | `--proxy` / `--proxy-file` / `--proxy-shuffle` | `PERPLEXITY_PROXY` | one proxy or a rotating pool, for a local browser |
 | `--proxy-block-retries` | 3 | proxy failures in a row before that proxy is dropped from the pool |
 | `--solve-captcha` | when-blocked | `off` / `when-blocked` / `always` |
@@ -197,8 +226,9 @@ full list.
   longer maintained.
 - **Selenium** (`selenium_scraper.py`) runs a local Chrome only.
   chromedriver cannot authenticate a Scraping Browser endpoint (the run
-  exits 2 before fetching), and its `--proxy-server` cannot use a proxy
-  password (the credentials are stripped, with a warning).
+  exits 2 before fetching; use `--scraper-api` instead), and its
+  `--proxy-server` cannot use a proxy password (the credentials are
+  stripped, with a warning).
 
 Install one engine per virtualenv (`requirements-playwright.txt`,
 `requirements-puppeteer.txt`, `requirements-selenium.txt`). Their
@@ -226,7 +256,7 @@ Chromium.
 ## Development
 
 ```bash
-python3 smoke_test.py            # 58 offline checks, no network, no engine needed
+python3 smoke_test.py            # 60 offline checks, no network, no engine needed
 python3 .github/ci_checks.py     # credential scan
 ```
 

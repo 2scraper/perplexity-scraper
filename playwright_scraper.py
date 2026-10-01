@@ -45,6 +45,7 @@ else:
 
 import env_config
 import page_flow
+import scraper_api_engine
 import scraper_api_client
 import page_parser as pp
 from captcha_solver import solve_when_blocked
@@ -125,6 +126,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--max-solves", type=_nonnegative_int, default=8, help="Cap on PAID 2Captcha solves for the whole run (0 = never pay); recorded as solves_spent")
     p.add_argument("--min-score", type=float, default=0.3, help="Minimum acceptable reCAPTCHA v3 score (2Captcha's minScore task field)")
     p.add_argument("--cdp-endpoint", default=None, help="Connect to a remote CDP session (e.g. the 2Captcha Scraping Browser API) instead of launching locally (or set PERPLEXITY_CDP_ENDPOINT) — the recommended setup: Cloudflare blocks local browsers")
+    p.add_argument("--scraper-api", action="store_true", help="Fetch through 2Captcha's Scraper API, routed through --cdp-endpoint's Scraping Browser profile, instead of driving this browser (needs TWOCAPTCHA_KEY and PERPLEXITY_CDP_ENDPOINT)")
     p.add_argument("--fingerprint", action="store_true", help="Fetch and apply a 2Captcha Fingerprint API profile (ignored with --cdp-endpoint — see fingerprint_client.refuse_if_cdp)")
     p.add_argument("--fp-tags", default=None, help="Fingerprint API filter, e.g. 'Windows,Chrome'")
     p.add_argument("--fp-country", default=None, help="Fingerprint API filter, e.g. 'us'")
@@ -293,6 +295,9 @@ async def run(args: argparse.Namespace) -> int:
     if stop is not None:
         return stop
     discover_topic = None if urls or args.url or args.urls_file else args.discover
+    if args.scraper_api:
+        args.out = args.out or _default_out(args.format)
+        return await scraper_api_engine.run(args, urls=urls, discover_topic=discover_topic, started_at=started_at)
     if async_playwright is None:
         print(f"Error: playwright is not installed ({_PLAYWRIGHT_IMPORT_ERROR}). "
               f"pip install -r requirements-playwright.txt && playwright install chromium", file=sys.stderr)

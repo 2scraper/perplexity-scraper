@@ -1019,6 +1019,87 @@ def _():
     assert len(solves) == 1 and rc == output_writer.EXIT_BLOCKED, (len(solves), rc)
 
 
+class _FakeScrapeClient:
+    """scraper_api_client.TwoCaptchaClient.scrape_url, scripted: each call
+    takes the next answer — a (target status, body) pair or an exception."""
+
+    def __init__(self, answers):
+        self.answers, self.calls = list(answers), []
+
+    def scrape_url(self, url, *, data_format, timeout, cdp_url):
+        self.calls.append((url, cdp_url))
+        answer = self.answers.pop(0) if len(self.answers) > 1 else self.answers[0]
+        if isinstance(answer, Exception):
+            raise answer
+        status, body = answer
+        return scraper_api_client.ScrapeResult(target_status=status, headers={}, body=body)
+
+
+def _sapi(answers, argv):
+    import scraper_api_engine
+    args = playwright_scraper.build_arg_parser().parse_args([*argv, "--delay-between-pages", "0"])
+    args._solve_budget = page_flow.SolveBudget(args.max_solves)
+    urls, _skipped = page_flow.resolve_urls(args)
+    topic = None if urls or args.url or args.urls_file else args.discover
+    client = _FakeScrapeClient(answers)
+    engine = scraper_api_engine.ScraperApiEngine(client, "ws://u:p@cb.example:9222")
+    slept = []
+
+    async def _sleep(seconds):  # record, don't wait
+        if engine.fatal is None:
+            slept.append(seconds)
+    engine.sleep = _sleep
+    with tempfile.TemporaryDirectory() as td:
+        args.out = str(Path(td) / "o.json")
+        rc = asyncio.run(page_flow.run(engine, args, urls=urls, discover_topic=topic, proxy_pool=None, client=None, started_at=0.0))
+        meta_p = Path(args.out + ".meta.json")
+        meta = json.loads(meta_p.read_text()) if meta_p.exists() else None
+        rows = json.loads(Path(args.out).read_text()) if Path(args.out).exists() else None
+    return rc, meta, rows, client, slept
+
+
+@check("--scraper-api END TO END on the REAL API captures (a fake Scraper API client): every call routes through the CDP profile; an article reads fully; a dead id (400) is page_not_found; Cloudflare's page is retried, then blocked; --discover pages the feed; a refused key is exit 5 with no further waiting")
+def _():
+    art = json.dumps(_fixture_json("perplexity_article_discover_live_20260930.json"))
+    rc, meta, rows, client, _ = _sapi([(200, art)], ["--url", _DISCOVER_URL])
+    assert rc == output_writer.EXIT_OK and rows[0]["sku"] == "perplexity-heYaECNnQuaM0AZ0QSWjaw" and rows[0]["section_count"], rows
+    assert meta["engine"] == "scraper_api" and client.calls[0][1] == "ws://u:p@cb.example:9222"
+    assert "/rest/article/" in client.calls[0][0] and len(client.calls) == 1, "one call per article, no page opened"
+
+    rc, meta, rows, client, _ = _sapi([(400, '{"detail": "You do not have permission to view this article"}')], ["--url", _DISCOVER_URL])
+    assert rc == output_writer.EXIT_ZERO_PRODUCTS and len(client.calls) == 1, "a 400 is final, never retried"
+
+    block = (_FIX / "perplexity_cloudflare_block_real.html").read_text(encoding="utf-8")
+    rc, meta, rows, client, slept = _sapi([(403, block)], ["--url", _DISCOVER_URL])
+    assert rc == output_writer.EXIT_BLOCKED and slept == list(page_flow.API_RETRY_DELAYS_S), (rc, slept)
+
+    feed = json.dumps(dict(_fixture_json("perplexity_discover_feed_live_20260930.json"), next_token=None))
+    rc, meta, rows, client, _ = _sapi([(200, feed), (200, art)], ["--discover", "top", "--max-results", "2"])
+    assert rc == output_writer.EXIT_OK and meta["pages_requested"] == 2 and "/rest/discover/feed" in client.calls[0][0], meta
+
+    refused = scraper_api_client.TwoCaptchaAuthError("Scraper API: invalid/missing TWOCAPTCHA_KEY")
+    rc, meta, rows, client, slept = _sapi([refused], ["--urls-file", str(_urls_file(3))])
+    assert rc == output_writer.EXIT_REMOTE_API_ERROR and len(client.calls) == 1 and slept == [], (rc, len(client.calls), slept)
+
+    flaky = scraper_api_client.TwoCaptchaError("Scraper API returned HTTP 502: bad gateway")
+    rc, meta, rows, client, _ = _sapi([flaky, (200, art)], ["--url", _DISCOVER_URL])
+    assert rc == output_writer.EXIT_OK and len(client.calls) == 2, "a transient Scraper API error is retried"
+
+
+@check("--scraper-api usage, all three engines, with NO engine driver needed: no key or no CDP endpoint is exit 2 before any call; Selenium does not refuse a credentialed endpoint in this mode (2Captcha reads it, not chromedriver)")
+def _():
+    for mod in _ENGINES:
+        base = ["--url", _DISCOVER_URL, "--scraper-api", "--out", str(Path(tempfile.mkdtemp()) / "o.json")]
+        a = mod.build_arg_parser().parse_args(base + ["--cdp-endpoint", "ws://u:p@cb.example:9222"])
+        rc = mod.run(a) if mod is selenium_scraper else asyncio.run(mod.run(a))
+        assert rc == output_writer.EXIT_BAD_USAGE, (mod.__name__, rc)
+        a = mod.build_arg_parser().parse_args(base + ["--twocaptcha-key", "x" * 32])
+        rc = mod.run(a) if mod is selenium_scraper else asyncio.run(mod.run(a))
+        assert rc == output_writer.EXIT_BAD_USAGE, (mod.__name__, rc)
+    src = (ROOT / "selenium_scraper.py").read_text(encoding="utf-8")
+    assert src.index("if args.scraper_api:") < src.index("_cdp_endpoint_has_credentials(args.cdp_endpoint):\n")
+
+
 def run() -> int:
     """All @check-decorated functions above already ran at import time
     (that's the point — see the `check()` docstring) and self-registered

@@ -9,6 +9,23 @@ rather than being a silent violation of that.
 
 ## [Unreleased]
 
+### Added — 2026-10-01, `--scraper-api`: no browser, 2Captcha's Scraper API
+- New `scraper_api_engine.py`, a `page_flow` engine with no page: the
+  Discover feed and every `/rest/article/` call are one Scraper API call
+  each, with `cdpurl` set to `PERPLEXITY_CDP_ENDPOINT`. Retries, parsing,
+  exit codes and the sidecar are the shared ones (`engine: scraper_api`).
+  All three scripts take `--scraper-api`; none of their drivers is
+  needed, and Selenium can use it despite its CDP limitation.
+- Measured live: on its own pool the Scraper API got Cloudflare's
+  challenge (target 403) for the page, the article API and the feed;
+  through a US profile the JSON came back, 10/10 on a Discover run.
+- A refused key or empty balance stops further calls and ends the run as
+  `remote_api_error` (exit 5); `page_flow.run` now reports that for any
+  engine whose last call failed on the service's side.
+- `scraper_api_client.scrape_url`: the `waitFor` example was
+  `networkidle`, which the API refuses (422); it is `load`.
+- `smoke_test.py`: 58 → 60 checks.
+
 ### Changed — 2026-10-01, one shared fetch loop; docs brought up to date
 - **One fetch loop.** Navigate, wait out a Cloudflare challenge, solve
   within budget, read `/rest/article/` with retries: this was copied into

@@ -35,11 +35,11 @@ separate host):
     read as zero products, not blocked). `scrape_url()`'s `cdp_url`
     parameter (below) is the fix for both — chaining this product to
     2Captcha's own Scraping Browser instead of their default pool.
-    This module is the core shared with shein-scraper: in THIS repo no
-    engine calls `scrape_url()` or `scraping_browser_connection_url()` —
-    perplexity reads articles from /rest/article/ inside a live page,
-    which a browserless fetch cannot do. The engines' Browser API path
-    is `--cdp-endpoint` / PERPLEXITY_CDP_ENDPOINT.
+    Here, `--scraper-api` (scraper_api_engine.py) calls `scrape_url()`
+    with `cdp_url` set to PERPLEXITY_CDP_ENDPOINT. Measured live
+    2026-10-01 on perplexity.ai: the default pool got Cloudflare's
+    challenge (target 403); through the profile, `/rest/article/` and the
+    Discover feed answered 200 with their JSON.
 
 Never construct a competitor's API call from this module.
 """
@@ -356,20 +356,20 @@ class TwoCaptchaClient:
         little higher below so our client doesn't give up before 2Captcha
         itself would. `wait_for`, if given, must already be the dict
         2Captcha's own Playwright-shaped wait condition expects (e.g.
-        `{"state": "networkidle"}`) — confirmed live 2026-09-22 that a
+        `{"state": "load"}`; `networkidle` is refused live with 422, only
+        `load` / `domcontentloaded` are accepted) — confirmed live 2026-09-22 that a
         JSON-encoded STRING here is rejected with `422 ScrapeParser:
         params.waitFor must be an object`, despite the published docs
         showing it as a string; this client sends it as a real JSON object
         to match what the API actually accepts, not what its own docs
         say. `cdp_url` (2Captcha's `cdpurl` field) lets a caller point
         this fetch at a CDP session THEY already control instead of
-        2Captcha's own default browser pool. Fill it with
-        `scraping_browser_connection_url()`'s own output — 2Captcha's OWN
-        Scraping Browser, not an arbitrary CDP session (one isn't known to
-        support this field) — to get this endpoint real captcha auto-solve
-        (this endpoint alone has none) and the country pinning described
-        in the module docstring. No caller in this repo (see the module
-        docstring)."""
+        2Captcha's own default browser pool: a 2Captcha Scraping Browser
+        endpoint (a `ws://...@cb.2captcha.com:9222` string, or
+        `scraping_browser_connection_url()`'s output) — not an arbitrary
+        CDP session, which isn't known to support this field. That gives
+        this endpoint the profile's captcha auto-solve (it has none of its
+        own) and its exit country. Caller here: scraper_api_engine.py."""
         key = self._require_key()
         payload = {
             "task_type": "scrape",

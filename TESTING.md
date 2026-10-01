@@ -23,6 +23,10 @@ loop (`page_flow.fetch_article`), over a US Browser API profile:
 | Puppeteer | the same 2 URLs; `--discover top --max-results 5` | same row; 5/5, exit 0 |
 | Selenium | `--cdp-endpoint` with credentials | refused up front, exit 2 (by design: chromedriver cannot authenticate) |
 | Playwright, local headless | 1 URL; `--discover top` | Cloudflare challenge → exit 3; Discover feed 403 |
+| `--scraper-api` (Playwright script, no driver installed) | `--discover top --max-results 10` | 10/10 rows, exit 0, 71s |
+| `--scraper-api` (Selenium and Puppeteer scripts) | 2 URLs | 1 row + `page_not_found`, exit 0 |
+| `--scraper-api` with an invalid key | 2 URLs | exit 5 after one call |
+| Scraper API on its own pool (no `cdpurl`) | article page, `/rest/article/`, feed | Cloudflare challenge, target 403 on all three |
 
 Still open: a local run that Cloudflare lets through, and Selenium
 against the article API.
@@ -52,7 +56,7 @@ cp .env.example .env
 
 Put a US Scraping Browser API connection string in `.env` as
 `PERPLEXITY_CDP_ENDPOINT` (format in `.env.example`). `TWOCAPTCHA_KEY` and
-`PERPLEXITY_PROXY` are needed only for steps 5 and 7.
+`PERPLEXITY_PROXY` are needed only for steps 5, 6 and 8.
 `python3 env_config.py` shows what was picked up without printing a
 secret.
 
@@ -112,9 +116,23 @@ python3 selenium_scraper.py --url "https://www.perplexity.ai/page/..." --out /tm
 Selenium cannot use the Browser API: with a credentialed
 `PERPLEXITY_CDP_ENDPOINT` it exits `2` before fetching anything. Comment
 the variable out to test it with a local browser (expect Cloudflare,
-exit `3`) or with step 7's proxy.
+exit `3`) or with step 8's proxy, or run it with `--scraper-api` (step 5).
 
-## 5. The 2Captcha REST API, with your real key
+## 5. Scraper API mode (`--scraper-api`)
+
+Needs `TWOCAPTCHA_KEY` as well as `PERPLEXITY_CDP_ENDPOINT`, and no
+browser driver (`pip install -r requirements.txt` is enough):
+
+```bash
+python3 playwright_scraper.py --scraper-api --discover top --max-results 10 --out /tmp/perplexity_sapi.json
+cat /tmp/perplexity_sapi.json.meta.json        # status: complete, engine: scraper_api
+```
+
+Exit `5` with "invalid/missing TWOCAPTCHA_KEY" or "insufficient balance"
+is the key or the balance. Exit `3` means the profile behind
+`PERPLEXITY_CDP_ENDPOINT` was challenged: try another profile.
+
+## 6. The 2Captcha REST API, with your real key
 
 Confirms the key on an endpoint that bills nothing:
 
@@ -129,14 +147,14 @@ print('balance: \$%.2f' % c.get_balance())
 "
 ```
 
-## 6. Proxy and Browser API together
+## 7. Proxy and Browser API together
 
 If `.env` has BOTH `PERPLEXITY_CDP_ENDPOINT` and `PERPLEXITY_PROXY`, the
 proxy is ignored with a warning: a CDP session already carries its own
 exit IP (the same goes for `--fingerprint`). Comment out whichever one you
 are not testing.
 
-## 7. The residential proxy (`--proxy` / `PERPLEXITY_PROXY`)
+## 8. The residential proxy (`--proxy` / `PERPLEXITY_PROXY`)
 
 With `PERPLEXITY_CDP_ENDPOINT` commented out:
 
@@ -147,7 +165,7 @@ python3 playwright_scraper.py --url "https://www.perplexity.ai/page/..." --out /
 On 2026-09-30 a US residential proxy got the page but the article API
 answered 403; a run that gets rows this way is worth recording above.
 
-## 8. A `--urls-file` batch, and the robots.txt skip
+## 9. A `--urls-file` batch, and the robots.txt skip
 
 ```bash
 cat > /tmp/pages.txt <<'URLS'
@@ -162,7 +180,7 @@ Expect: the `/search` line logged as skipped and never requested
 (`page_parser.is_disallowed_path`), the second line `page_not_found`, and
 a `complete` run with one row.
 
-## 9. Push to GitHub and let CI do the rest
+## 10. Push to GitHub and let CI do the rest
 
 ```bash
 git remote add origin git@github.com:2scraper/perplexity-scraper.git
@@ -183,9 +201,9 @@ Then, in the GitHub repo's Settings → **Secrets and variables → Actions**:
 Run **Actions → canary → Run workflow** once by hand and read its log and
 uploaded artifact, not just the badge.
 
-## 10. What "done" looks like
+## 11. What "done" looks like
 
 - `tests.yml` green: `offline` on both Python versions, `docker`, and all
   three `engine-smoke` legs.
 - At least one manually dispatched `canary.yml` run, looked at.
-- Steps 2-3 reproduce the table at the top on your own profile.
+- Steps 2, 3 and 5 reproduce the table at the top on your own profile.

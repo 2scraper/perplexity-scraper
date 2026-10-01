@@ -54,6 +54,7 @@ else:
 
 import env_config
 import page_flow
+import scraper_api_engine
 import page_parser as pp
 from captcha_solver import solve_when_blocked
 from output_writer import EXIT_BAD_USAGE, EXIT_CRASH
@@ -127,6 +128,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--fp-country", default=None, help="Fingerprint API filter, e.g. 'us'")
     p.add_argument("--cdp-endpoint", default=None,
                     help="NOTE: refused if it carries credentials — Selenium cannot authenticate a remote CDP session")
+    p.add_argument("--scraper-api", action="store_true", help="Fetch through 2Captcha's Scraper API, routed through --cdp-endpoint's Scraping Browser profile, instead of driving this browser (needs TWOCAPTCHA_KEY and PERPLEXITY_CDP_ENDPOINT)")
     p.add_argument("--allow-empty", action="store_true")
     p.add_argument("--dump-html", action="store_true")
     p.add_argument("--headless", dest="headless", action="store_true", default=True)
@@ -306,6 +308,9 @@ def run(args: argparse.Namespace) -> int:
     if stop is not None:
         return stop
     discover_topic = None if urls or args.url or args.urls_file else args.discover
+    if args.scraper_api:
+        args.out = args.out or _default_out(args.format)
+        return asyncio.run(scraper_api_engine.run(args, urls=urls, discover_topic=discover_topic, started_at=started_at))
     if args.cdp_endpoint and _cdp_endpoint_has_credentials(args.cdp_endpoint):
         print(
             "Error: --cdp-endpoint carries credentials — Selenium/chromedriver's "

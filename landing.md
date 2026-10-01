@@ -22,6 +22,7 @@ Every row comes from the site's own article API (`/rest/article/`), called from 
 - One article by URL, a batch from a file, or the Discover feed (`--discover top`) up to `--max-results`
 - Article fields: author, summary, publish/update times, read time, view/like/fork counts, a JSON-encoded sources list, section and word counts, slug
 - JSON and CSV export, with a documented `Product` schema and a `.meta.json` sidecar on every completed/partial run
+- A browserless mode (`--scraper-api`) that needs no browser driver installed
 - A run-wide cap on paid captcha solves (`--max-solves`), recorded in the sidecar
 - Respects `robots.txt` by construction: a disallowed path is filtered out before ever being requested
 
@@ -30,6 +31,7 @@ Every row comes from the site's own article API (`/rest/article/`), called from 
 | Product | What it's for |
 |---|---|
 | **Scraping Browser API — 2captcha.com** | A remote browser session over CDP with its own proxy, fingerprint and captcha auto-solve bundled — `--cdp-endpoint`. The setup this scraper was verified on |
+| **Scraper API — 2captcha.com** | No browser at all: `--scraper-api` fetches the feed and every article through the same profile, one HTTP call each |
 | **Captcha solving — [2captcha.com](https://2captcha.com)** | Detects a challenge, decides whether it's actually blocking you (not just present), solves it |
 | **Browser fingerprints — 2captcha Fingerprint API** | Pin a specific OS/browser/country fingerprint for a locally-launched browser |
 | **Proxies — 2captcha.com/proxy** (2prx.com is the same product, different name) | Drop credentials into `.env`, rotated automatically with per-exit failure tracking |
