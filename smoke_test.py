@@ -98,11 +98,15 @@ def _():
 
 @check("no forbidden overclaiming wording in any shipped .py/.md/.yml file")
 def _():
+    # Built from pieces so this file can be scanned too (CLAUDE.md §22: the
+    # check used to exempt its own file, where the phrases sat verbatim).
+    anti = "anti" + "detect"
     banned = (
-        "cloud browser", "antidetect browser", "2scraper antidetect browser",
-        "gate.2prx.com", "--antidetect", "antidetect_local_api",
+        "cloud" + " browser", anti + " browser", "2scraper " + anti + " browser",
+        "gate." + "2prx.com", "--" + anti, anti + "_local_api",
     )
-    exempt_names = {"smoke_test.py", "CLAUDE.md"}
+    exempt_names = {"CLAUDE.md"}
+    venvs = {p.parent for p in ROOT.rglob("pyvenv.cfg")}
     for path in ROOT.rglob("*"):
         if not path.is_file():
             continue
@@ -110,7 +114,7 @@ def _():
             continue
         if path.name in exempt_names or path.name.startswith("2scraper"):
             continue
-        if ".git" in path.parts:
+        if ".git" in path.parts or "__pycache__" in path.parts or any(v in path.parents for v in venvs):
             continue
         text = path.read_text(encoding="utf-8", errors="ignore").lower()
         for phrase in banned:
@@ -146,6 +150,8 @@ def _():
 @check("every top-level module is in the Dockerfile COPY and pyproject py-modules (a module left out breaks the image on every run — CLAUDE.md §16)")
 def _():
     import re as _re
+    if not (ROOT / "Dockerfile").exists() and not (ROOT / "pyproject.toml").exists():
+        return  # the Docker image's own copy of this suite ships neither (CLAUDE.md §22)
     modules = sorted(pth.stem for pth in ROOT.glob("*.py"))
     docker = (ROOT / "Dockerfile").read_text(encoding="utf-8")
     pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
@@ -153,28 +159,6 @@ def _():
     for mod in modules:
         assert f"{mod}.py" in docker, f"{mod}.py missing from the Dockerfile COPY"
         assert mod in listed, f"{mod} missing from pyproject py-modules"
-
-
-@check("all three engines read the article from its own /rest/article/ endpoint and hand the outcome to page_flow.decide — one triage, not three copies")
-def _():
-    for path in ("playwright_scraper.py", "selenium_scraper.py", "puppeteer_scraper.py"):
-        src = (ROOT / path).read_text(encoding="utf-8")
-        assert "pp.article_api_url(ref)" in src, f"{path}: does not call the article API"
-        assert "page_flow.decide(" in src, f"{path}: decides the outcome itself instead of page_flow"
-        assert "page_flow.is_challenge(html)" in src and "CHALLENGE_WAIT_S" in src, f"{path}: no bounded challenge wait"
-        assert "credentials: 'include'" in src, f"{path}: the fetch must carry the page's own cookies"
-
-
-@check("over --cdp-endpoint: Playwright reuses the profile's default context and pyppeteer DISCONNECTS instead of closing the remote browser")
-def _():
-    pw = (ROOT / "playwright_scraper.py").read_text(encoding="utf-8")
-    assert "reuse_default and browser.contexts" in pw
-    pup = (ROOT / "puppeteer_scraper.py").read_text(encoding="utf-8")
-    assert "await browser.disconnect()" in pup and "_release(remote_browser, remote=True)" in pup
-    assert "get_event_loop().run_until_complete" not in pup, "asyncio.get_event_loop() crashes once a loop was closed"
-    assert "asyncio.wait_for(\n                pyppeteer_connect(" in pup and "CDP_CONNECT_TIMEOUT_S" in pup, (
-        "pyppeteer's connect() has no timeout — a rejected handshake hung the run live"
-    )
 
 
 @check("engines never request a robots.txt-disallowed path — _resolve_urls filters it out")
@@ -893,6 +877,146 @@ def _():
             raise AssertionError("different --sort must be refused")
         except SystemExit as exc:
             assert "--sort" in str(exc)
+
+
+# --------------------------------------------------------------------------- #
+# page_flow — the ONE fetch loop (CLAUDE.md §26)
+# --------------------------------------------------------------------------- #
+_ENGINES = (playwright_scraper, selenium_scraper, puppeteer_scraper)
+_SESSION = {"playwright_scraper": "_PlaywrightSession", "selenium_scraper": "_SeleniumSession", "puppeteer_scraper": "_PyppeteerSession"}
+_ENGINE = {"playwright_scraper": "_PlaywrightEngine", "selenium_scraper": "_SeleniumEngine", "puppeteer_scraper": "_PyppeteerEngine"}
+
+
+@check("the fetch loop exists ONCE: no engine carries its own fetch/discover/finish copy, each calls page_flow.run and page_flow.resolve_urls; the CDP connect goes through connect_with_retry (bounded, retried, 401 explained); pyppeteer disconnects instead of closing the remote browser")
+def _():
+    import ast as _ast
+    for mod in _ENGINES:
+        src = (ROOT / f"{mod.__name__}.py").read_text(encoding="utf-8")
+        defs = {n.name for n in _ast.walk(_ast.parse(src)) if isinstance(n, (_ast.FunctionDef, _ast.AsyncFunctionDef))}
+        for gone in ("scrape_one_page", "scrape_urls", "collect_discover_urls"):
+            assert gone not in defs, f"{mod.__name__}: still defines {gone}"
+        for fragment in ("finish_run(", "page_flow.decide(", "API_RETRY_DELAYS_S", "parse_discover_feed("):
+            assert fragment not in src, f"{mod.__name__}: loop logic {fragment!r} outside page_flow"
+        assert src.count("page_flow.run(") == 1 and mod._resolve_urls is page_flow.resolve_urls, mod.__name__
+    for mod in (playwright_scraper, puppeteer_scraper):
+        assert "scraper_api_client.connect_with_retry(" in (ROOT / f"{mod.__name__}.py").read_text(encoding="utf-8")
+    pw = (ROOT / "playwright_scraper.py").read_text(encoding="utf-8")
+    assert "reuse_default and browser.contexts" in pw
+    pup = (ROOT / "puppeteer_scraper.py").read_text(encoding="utf-8")
+    assert "await browser.disconnect()" in pup and "_release(remote_browser, remote=True)" in pup
+    assert "get_event_loop().run_until_complete" not in pup
+
+
+@check("§26 ops set, derived from page_flow's AST (every session.<op> / engine.<op> the loop uses): each engine's session and engine class provides all of them; flags the loop reads exist in all three")
+def _():
+    import ast as _ast
+    tree = _ast.parse((ROOT / "page_flow.py").read_text(encoding="utf-8"))
+    ops = {"session": set(), "engine": set()}
+    for node in _ast.walk(tree):
+        if isinstance(node, _ast.Attribute) and isinstance(node.value, _ast.Name) and node.value.id in ops:
+            ops[node.value.id].add(node.attr)
+    assert {"goto", "content", "fetch_json", "wait", "close"} <= ops["session"], ops
+    assert {"open", "sleep", "solve_captcha", "readiness_s", "name"} <= ops["engine"], ops
+    for mod in _ENGINES:
+        sc, ec = getattr(mod, _SESSION[mod.__name__]), getattr(mod, _ENGINE[mod.__name__])
+        assert not [o for o in ops["session"] if not hasattr(sc, o)], mod.__name__
+        assert not [o for o in ops["engine"] if not hasattr(ec, o)], mod.__name__
+        a = mod.build_arg_parser().parse_args(["--discover", "top"])
+        assert a.max_solves == 8 and a.delay_between_pages == 2.0 and a.retries == 2, mod.__name__
+
+
+class _FakeSession:
+    def __init__(self, script):
+        self.script, self.closed, self.fetches = dict(script), False, []
+
+    async def goto(self, url):
+        step = self.script.get("goto")
+        if isinstance(step, Exception):
+            raise step
+        return self.script.get("status", 200)
+
+    async def content(self):
+        return self.script.get("html", "<html>" + "pplx-next-static-public " * 5 + "<h2>x</h2></html>")
+
+    async def fetch_json(self, url):
+        self.fetches.append(url)
+        answers = self.script.get("api", [(200, None, None)])
+        return answers[min(len(self.fetches), len(answers)) - 1]
+
+    async def wait(self, seconds):
+        return None
+
+    async def close(self):
+        self.closed = True
+
+
+class _FakeEngine:
+    name = "fake"
+    readiness_s = 0
+
+    def __init__(self, scripts, solve=None):
+        self.scripts, self.sessions, self.slept, self._solve = list(scripts), [], [], solve
+
+    async def open(self, proxy):
+        script = self.scripts.pop(0) if len(self.scripts) > 1 else self.scripts[0]
+        sess = _FakeSession(script)
+        self.sessions.append(sess)
+        return sess
+
+    async def sleep(self, seconds):
+        self.slept.append(seconds)
+
+    async def solve_captcha(self, session, *, html, url):
+        return self._solve() if self._solve else None
+
+
+def _pflow(scripts, argv, *, solve=None):
+    args = playwright_scraper.build_arg_parser().parse_args([*argv, "--delay-between-pages", "0"])
+    args._solve_budget = page_flow.SolveBudget(args.max_solves)
+    urls, _skipped = page_flow.resolve_urls(args)
+    topic = None if urls or args.url or args.urls_file else args.discover
+    engine = _FakeEngine(scripts, solve)
+    with tempfile.TemporaryDirectory() as td:
+        args.out = str(Path(td) / "o.json")
+        rc = asyncio.run(page_flow.run(engine, args, urls=urls, discover_topic=topic, proxy_pool=None, client=None, started_at=0.0))
+        meta_p = Path(args.out + ".meta.json")
+        meta = json.loads(meta_p.read_text()) if meta_p.exists() else None
+        rows = json.loads(Path(args.out).read_text()) if Path(args.out).exists() else None
+    assert all(s.closed for s in engine.sessions), "every opened session must be closed"
+    return rc, meta, rows, engine
+
+
+def _urls_file(n):
+    f = Path(tempfile.mkdtemp()) / "urls.txt"
+    f.write_text("\n".join(f"https://www.perplexity.ai/page/a-{str(i).zfill(22)}" for i in range(n)), encoding="utf-8")
+    return f
+
+
+@check("page_flow END TO END with a fake engine on the REAL 2026-09-30 API captures: an article reads fully; a dead URL (API 400) is page_not_found, not blocked; a refused API is retried, then read; a Cloudflare page is blocked and never parsed; --discover pages the real feed; the paid-solve budget stops at --max-solves")
+def _():
+    art = _fixture_json("perplexity_article_discover_live_20260930.json")
+    rc, meta, rows, eng = _pflow([{"api": [(200, art, None)]}], ["--url", _DISCOVER_URL])
+    assert rc == output_writer.EXIT_OK and rows[0]["sku"] == "perplexity-heYaECNnQuaM0AZ0QSWjaw" and meta["solves_spent"] == 0
+
+    rc, meta, rows, eng = _pflow([{"api": [(400, {"detail": "x"}, None)]}], ["--url", _DISCOVER_URL])
+    assert rc == output_writer.EXIT_ZERO_PRODUCTS and len(eng.sessions[0].fetches) == 1, "a 400 is final, never retried"
+
+    rc, meta, rows, eng = _pflow([{"api": [(403, None, "not JSON"), (403, None, "not JSON"), (200, art, None)]}], ["--url", _DISCOVER_URL])
+    assert rc == output_writer.EXIT_OK and len(eng.sessions[0].fetches) == 3 and eng.slept[:2] == [3, 5], (rc, eng.slept)
+
+    block = (_FIX / "perplexity_cloudflare_block_real.html").read_text(encoding="utf-8")
+    rc, meta, rows, eng = _pflow([{"html": block, "status": 403}], ["--url", _DISCOVER_URL])
+    assert rc == output_writer.EXIT_BLOCKED and eng.sessions[0].fetches == [], "a challenge page is never asked for the API"
+
+    feed = _fixture_json("perplexity_discover_feed_live_20260930.json")
+    feed_last = dict(feed, next_token=None)
+    rc, meta, rows, eng = _pflow([{"api": [(200, feed_last, None)]}, {"api": [(200, art, None)]}], ["--discover", "top", "--max-results", "2"])
+    assert rc == output_writer.EXIT_OK and meta["discover_topic"] == "top" and meta["pages_requested"] == 2, meta
+
+    solves = []
+    rc, meta, rows, eng = _pflow([{"html": block, "status": 403}], ["--urls-file", str(_urls_file(3)), "--max-solves", "1"],
+                                 solve=lambda: solves.append(1) or {"action": "warning_solver_error"})
+    assert len(solves) == 1 and rc == output_writer.EXIT_BLOCKED, (len(solves), rc)
 
 
 def run() -> int:

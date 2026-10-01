@@ -29,13 +29,13 @@ point a query at.
 from __future__ import annotations
 
 import argparse
+import asyncio
 import json
 import logging
 import os
 import sys
 import time
-from pathlib import Path
-from typing import List, Optional, Tuple
+from typing import Optional
 from urllib.parse import urlparse
 
 try:
@@ -56,8 +56,8 @@ import env_config
 import page_flow
 import page_parser as pp
 from captcha_solver import solve_when_blocked
-from output_writer import EXIT_BAD_USAGE, EXIT_CRASH, Product, finish_run
-from proxy_pool import Proxy, ProxyPool, ProxyParseError, is_proxy_dead_error, load_proxies, redact_credentials
+from output_writer import EXIT_BAD_USAGE, EXIT_CRASH
+from proxy_pool import Proxy, ProxyPool, ProxyParseError, load_proxies
 from fingerprint_client import fetch_fingerprint, refuse_if_cdp, user_agent_from
 from scraper_api_client import TwoCaptchaClient
 
@@ -120,6 +120,7 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--twocaptcha-key", default=None)
     p.add_argument("--captcha-api", default=None, help="Override the 2Captcha API base URL (testing only)")
     p.add_argument("--solve-captcha", choices=["off", "when-blocked", "always"], default="when-blocked")
+    p.add_argument("--max-solves", type=int, default=8, help="Cap on PAID 2Captcha solves for the whole run (0 = never pay); recorded as solves_spent")
     p.add_argument("--min-score", type=float, default=0.3, help="Minimum acceptable reCAPTCHA v3 score (2Captcha's minScore task field)")
     p.add_argument("--fingerprint", action="store_true", help="Fetch and apply a 2Captcha Fingerprint API profile's user agent (ignored with --cdp-endpoint — see fingerprint_client.refuse_if_cdp)")
     p.add_argument("--fp-tags", default=None, help="Fingerprint API filter, e.g. 'Windows'")
@@ -137,37 +138,7 @@ def _default_out(fmt: str) -> str:
     return f"perplexity_results.{fmt}"
 
 
-def _resolve_urls(args: argparse.Namespace) -> tuple:
-    """See playwright_scraper.py's identical helper for the full rationale
-    (robots.txt-disallowed paths are filtered out, never fetched)."""
-    if args.url:
-        candidates = [args.url]
-    elif args.urls_file:
-        try:
-            lines = Path(args.urls_file).read_text(encoding="utf-8").splitlines()
-        except OSError as exc:
-            raise ValueError(f"could not read --urls-file {args.urls_file!r}: {exc}")
-        candidates = [line.strip() for line in lines if line.strip() and not line.strip().startswith("#")]
-    else:
-        return [], 0
-
-    urls, skipped = [], 0
-    for url in candidates:
-        if pp.is_disallowed_path(url):
-            log.warning("Skipping %s — its path is disallowed by perplexity.ai's robots.txt; this tool never requests a disallowed path.", url)
-            skipped += 1
-            continue
-        if not pp.is_page_url(url):
-            log.warning("Skipping %s — not a perplexity.ai article URL (/page/... or /discover/{topic}/...).", url)
-            skipped += 1
-            continue
-        urls.append(url)
-    return urls, skipped
-
-
-def _dump_path(out_path: str, index: int) -> str:
-    stem = Path(out_path).with_suffix("")
-    return f"{stem}_debug_{index}.html"
+_resolve_urls = page_flow.resolve_urls  # the one implementation is page_flow's
 
 
 def _cdp_endpoint_has_credentials(cdp_endpoint: str) -> bool:
@@ -265,103 +236,6 @@ def _page_source(driver) -> str:
         return ""
 
 
-def scrape_one_page(
-    *, url: str, index: int, args: argparse.Namespace, driver,
-    proxy: Optional[Proxy], proxy_pool: Optional[ProxyPool], client: Optional[TwoCaptchaClient],
-) -> Tuple[Optional[Product], bool, bool, bool]:
-    """Returns (product_or_none, blocked, nav_failed, not_found) — see
-    playwright_scraper.scrape_one_page."""
-    log.info("Fetching %s (proxy: %s)", url, proxy.masked() if proxy else "(none — direct connection)")
-    last_error = None
-    status = None
-    for attempt in range(args.retries + 1):
-        try:
-            driver.set_page_load_timeout(NAV_TIMEOUT_S)
-            driver.get(url)
-            time.sleep(READINESS_WAIT_S)
-            try:
-                reported = driver.execute_script(_STATUS_JS)
-                status = int(reported) if reported else None
-            except WebDriverException:
-                pass
-            last_error = None
-            break
-        except WebDriverException as exc:
-            last_error = redact_credentials(str(exc).splitlines()[0])
-            if proxy_pool is not None and proxy is not None and is_proxy_dead_error(last_error):
-                proxy_pool.report_failure(proxy, dead=True)
-            log.warning("Navigation attempt %d/%d for %s failed: %s", attempt + 1, args.retries + 1, url, last_error)
-            if attempt < args.retries:
-                time.sleep(args.retry_delay)
-    if last_error is not None:
-        log.error("%s permanently failed to load: %s", url, last_error)
-        return None, False, True, False
-
-    html = _page_source(driver)
-    waited = 0.0
-    while page_flow.is_challenge(html) and waited < CHALLENGE_WAIT_S:
-        time.sleep(1)
-        waited += 1
-        html = _page_source(driver) or html
-    if waited and not page_flow.is_challenge(html):
-        log.info("%s: Cloudflare challenge cleared by itself after %.0fs.", url, waited)
-    if page_flow.is_challenge(html):
-        captcha_result = _maybe_solve_captcha(html=html, url=url, client=client, policy=args.solve_captcha, min_score=args.min_score)
-        if captcha_result and captcha_result.get("action") == "solved":
-            time.sleep(READINESS_WAIT_S)
-            html = _page_source(driver) or html
-
-    _topic, ref = pp.article_ref(url)
-    api_status, article_json, api_error = (0, None, "skipped: page is a bot challenge")
-    if not page_flow.is_challenge(html):
-        api_status, article_json, api_error = _fetch_json(driver, pp.article_api_url(ref))
-        for delay in page_flow.API_RETRY_DELAYS_S:
-            if not page_flow.should_retry_api(api_status, api_error):
-                break
-            log.info("%s: article API HTTP %s — retrying in %ss (a fresh profile needs the page's own bot check first).", url, api_status or "-", delay)
-            time.sleep(delay)
-            api_status, article_json, api_error = _fetch_json(driver, pp.article_api_url(ref))
-    outcome = page_flow.decide(url=url, http_status=status, html=html, api_status=api_status,
-                               article_json=article_json, api_error=api_error)
-    for message in outcome.warnings:
-        log.warning("%s", message)
-    if proxy_pool is not None and proxy is not None:
-        if outcome.blocked and status in (403, 429):
-            proxy_pool.report_failure(proxy, dead=True)
-        elif not outcome.blocked:
-            proxy_pool.report_success(proxy)
-    if args.dump_html:
-        Path(_dump_path(args.out, index)).write_text(html, encoding="utf-8")
-    return outcome.product, outcome.blocked, False, outcome.not_found
-
-
-def collect_discover_urls(*, topic: str, limit: int, args: argparse.Namespace, driver) -> tuple:
-    """(urls, error) — see playwright_scraper.collect_discover_urls."""
-    urls: List[str] = []
-    try:
-        driver.set_page_load_timeout(NAV_TIMEOUT_S)
-        driver.get(pp.DISCOVER_URL)
-        time.sleep(READINESS_WAIT_S)
-    except WebDriverException as exc:
-        return [], f"could not open {pp.DISCOVER_URL}: {redact_credentials(str(exc).splitlines()[0])}"
-    offset = 0
-    while len(urls) < limit:
-        status, data, error = _fetch_json(driver, pp.discover_feed_api_url(topic, offset=offset))
-        if error or status != 200:
-            if not urls:
-                return [], f"Discover feed HTTP {status or '-'}: {error or 'unexpected status'}"
-            log.warning("Discover feed page at offset %d failed (HTTP %s) — keeping the %d URLs collected.", offset, status or "-", len(urls))
-            break
-        page_urls, has_more = pp.parse_discover_feed(data, topic=topic)
-        new = [u for u in page_urls if u not in urls]
-        urls.extend(new)
-        if not new or not has_more:
-            break
-        offset += len(page_urls)
-        time.sleep(args.delay_between_pages)
-    return urls[:limit], None
-
-
 def _quit(driver) -> None:
     try:
         driver.quit()
@@ -369,60 +243,69 @@ def _quit(driver) -> None:
         pass
 
 
-def scrape_urls(
-    *, urls: List[str], args: argparse.Namespace,
-    proxy_pool: Optional[ProxyPool], client: Optional[TwoCaptchaClient],
-    user_agent: Optional[str] = None,
-) -> tuple:
-    """Returns (products, blocked, remote_api_error, pages_completed,
-    failed_pages). A fresh driver per URL, on its own exit (a rotation is a
-    fresh browser — CLAUDE.md §8)."""
-    products: List[Product] = []
-    failed_pages: List[int] = []
-    any_blocked = False
-    completed = 0
+class _SeleniumSession:
+    """page_flow.PageSession over one Selenium driver (blocking WebDriver
+    calls inside coroutines; the shared loop runs under asyncio.run)."""
 
-    capped = urls[: args.max_results]
-    for i, url in enumerate(capped, start=1):
-        proxy = proxy_pool.next() if proxy_pool else None
-        driver = _build_driver(headless=args.headless, proxy=proxy, cdp_endpoint=args.cdp_endpoint, user_agent=user_agent)
+    def __init__(self, driver):
+        self.driver = driver
+
+    async def goto(self, url: str) -> Optional[int]:
+        self.driver.set_page_load_timeout(NAV_TIMEOUT_S)
+        self.driver.get(url)
+        time.sleep(READINESS_WAIT_S)
         try:
-            product, blocked, nav_failed, _not_found = scrape_one_page(
-                url=url, index=i, args=args, driver=driver, proxy=proxy, proxy_pool=proxy_pool, client=client,
-            )
-        finally:
-            _quit(driver)
-        if nav_failed:
-            failed_pages.append(i)
-        else:
-            completed += 1
-            if blocked:
-                any_blocked = True
-            if product is not None:
-                products.append(product)
-        if i < len(capped):
-            time.sleep(args.delay_between_pages)
+            reported = self.driver.execute_script(_STATUS_JS)
+            return int(reported) if reported else None
+        except WebDriverException:
+            return None
 
-    return products, any_blocked, False, completed, failed_pages
+    async def content(self) -> str:
+        return _page_source(self.driver)
+
+    async def fetch_json(self, url: str) -> tuple:
+        return _fetch_json(self.driver, url)
+
+    async def wait(self, seconds: float) -> None:
+        time.sleep(seconds)
+
+    async def close(self) -> None:
+        _quit(self.driver)
+
+
+class _SeleniumEngine:
+    """page_flow.Engine for Selenium: a fresh driver per URL."""
+
+    name = ENGINE_NAME
+    readiness_s = READINESS_WAIT_S
+
+    def __init__(self, args: argparse.Namespace, *, user_agent: Optional[str], client):
+        self.args, self.user_agent, self.client = args, user_agent, client
+
+    async def open(self, proxy) -> _SeleniumSession:
+        return _SeleniumSession(_build_driver(headless=self.args.headless, proxy=proxy,
+                                              cdp_endpoint=self.args.cdp_endpoint, user_agent=self.user_agent))
+
+    async def sleep(self, seconds: float) -> None:
+        time.sleep(seconds)
+
+    async def solve_captcha(self, session, *, html: str, url: str):
+        return _maybe_solve_captcha(html=html, url=url, client=self.client, policy=self.args.solve_captcha,
+                                    min_score=self.args.min_score)
 
 
 def run(args: argparse.Namespace) -> int:
     started_at = time.time()
+    args._solve_budget = page_flow.SolveBudget(args.max_solves)
     try:
         urls, skipped_disallowed = _resolve_urls(args)
     except ValueError as exc:
         print(f"Error: {exc}", file=sys.stderr)
         return EXIT_BAD_USAGE
+    stop = page_flow.validate_common(args, urls=urls, skipped=skipped_disallowed, print_err=lambda m: print(m, file=sys.stderr))
+    if stop is not None:
+        return stop
     discover_topic = None if urls or args.url or args.urls_file else args.discover
-    if not urls and not discover_topic:
-        if skipped_disallowed:
-            print(f"Error: none of the URLs given is a fetchable article ({skipped_disallowed} skipped) — nothing left to fetch", file=sys.stderr)
-        else:
-            print("Error: provide --url, --urls-file or --discover", file=sys.stderr)
-        return EXIT_BAD_USAGE
-    if args.format not in ("json", "csv"):
-        print(f"Error: unsupported --format {args.format!r}", file=sys.stderr)
-        return EXIT_BAD_USAGE
     if args.cdp_endpoint and _cdp_endpoint_has_credentials(args.cdp_endpoint):
         print(
             "Error: --cdp-endpoint carries credentials — Selenium/chromedriver's "
@@ -461,39 +344,13 @@ def run(args: argparse.Namespace) -> int:
             if profile:
                 user_agent = user_agent_from(profile)
 
-    products, blocked, remote_api_error, completed, failed_pages = [], False, False, 0, []
     try:
-        if discover_topic:
-            proxy = proxy_pool.next() if proxy_pool else None
-            driver = _build_driver(headless=args.headless, proxy=proxy, cdp_endpoint=args.cdp_endpoint, user_agent=user_agent)
-            try:
-                urls, discover_error = collect_discover_urls(topic=discover_topic, limit=args.max_results, args=args, driver=driver)
-            finally:
-                _quit(driver)
-            if discover_error:
-                log.error("Discover feed unavailable — treating as remote_api_error: %s", discover_error)
-                remote_api_error = True
-            elif not urls:
-                log.warning("Discover topic %r returned no articles.", discover_topic)
-            else:
-                log.info("Discover topic %r: %d article URL(s) to fetch.", discover_topic, len(urls))
-        if not remote_api_error:
-            products, blocked, remote_api_error, completed, failed_pages = scrape_urls(
-                urls=urls, args=args, proxy_pool=proxy_pool, client=client, user_agent=user_agent,
-            )
-        price_confirmed_pct = None  # not applicable — articles carry no price (see output_writer.Product docstring)
+        return asyncio.run(page_flow.run(_SeleniumEngine(args, user_agent=user_agent, client=client), args, urls=urls,
+                                         discover_topic=discover_topic, proxy_pool=proxy_pool, client=client,
+                                         started_at=started_at))
     except Exception:
         log.exception("Unhandled error — this is a crash, not a normal blocked/empty run")
         return EXIT_CRASH
-
-    return finish_run(
-        products=products, out_path=args.out, fmt=args.format, engine=ENGINE_NAME,
-        url=(urls[0] if urls else "") if not discover_topic else f"{pp.DISCOVER_URL} (topic={discover_topic})",
-        pages_requested=len(urls[: args.max_results]), pages_completed=completed,
-        failed_pages=failed_pages or None,
-        blocked=blocked, remote_api_error=remote_api_error, allow_empty=args.allow_empty,
-        started_at=started_at, price_confirmed_pct=price_confirmed_pct,
-    )
 
 
 def main() -> int:

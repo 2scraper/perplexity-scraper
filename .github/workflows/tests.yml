@@ -43,6 +43,21 @@ jobs:
           for m in $(python -c "import pathlib; print(' '.join(p.stem for p in pathlib.Path('$GITHUB_WORKSPACE').glob('*.py')))"); do
             /tmp/wheelenv/bin/python -c "import $m" || { echo "::error::$m does not import from the wheel"; exit 1; }
           done
+
+  docker:
+    name: docker image builds, runs, and launches Chromium
+    runs-on: ubuntu-latest
+    # Build the Docker image in CI — nothing else does, and this is how
+    # every older repo in this family shipped a broken one at least once.
+    # Four steps, each catching a distinct way the image can lie about
+    # working: it builds at all; its own entrypoint runs (the image's CMD
+    # is --help — the exact invocation a missing module breaks); a real
+    # browser actually launches (not just "playwright install --with-deps"
+    # exiting 0); and it carries no .env, no test suite and no fixtures —
+    # a .env baked into a published image is a credential handed to
+    # everyone who can pull it.
+    steps:
+      - uses: actions/checkout@v4
       - name: Build the image
         run: docker build -t perplexity-scraper:ci .
       - name: Entrypoint runs (the CMD a missing module would break)
