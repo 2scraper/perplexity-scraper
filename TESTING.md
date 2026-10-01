@@ -13,6 +13,17 @@
 | Selenium, headful via US residential proxy | 3 URLs | page served, API 403 (HTML-only rows at the time; the HTML path was since removed) |
 | Playwright + Puppeteer, a second fresh profile | 3 URLs; Discover 5 and 25 (default 2s delay) | all complete, 25/25; at 0.5s delay the API throttled after 13 |
 
+**Re-run 2026-10-01**, after the engines moved onto the one shared fetch
+loop (`page_flow.fetch_article`), over a US Browser API profile:
+
+| Engine | Run | Result |
+|---|---|---|
+| Playwright | 2 URLs (old Page, dead URL) | 1 full row, dead URL `page_not_found`, exit 0, 0 solves |
+| Playwright | `--discover top --max-results 25` | 25/25 rows, exit 0 |
+| Puppeteer | the same 2 URLs; `--discover top --max-results 5` | same row; 5/5, exit 0 |
+| Selenium | `--cdp-endpoint` with credentials | refused up front, exit 2 (by design: chromedriver cannot authenticate) |
+| Playwright, local headless | 1 URL; `--discover top` | Cloudflare challenge → exit 3; Discover feed 403 |
+
 Still open: a local run that Cloudflare lets through, and Selenium
 against the article API.
 

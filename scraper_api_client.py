@@ -33,12 +33,13 @@ separate host):
     clean fetch landed on shein.com's Netherlands locale in one live test,
     which this repo's parser — tuned for the US/English markup — then
     read as zero products, not blocked). `scrape_url()`'s `cdp_url`
-    parameter (below), which every engine's `--scraper-api-cdp` now
-    fills, is the fix for both — chaining this product to 2Captcha's own
-    Scraping Browser instead of their default pool — but that combination
-    is wired, not yet exercised against a real 2Captcha/shein.com session
-    (TESTING.md). See engine `run()`'s `--scraper-api`/`--scraper-api-cdp`
-    docstring/help text for what this means for a caller.
+    parameter (below) is the fix for both — chaining this product to
+    2Captcha's own Scraping Browser instead of their default pool.
+    This module is the core shared with shein-scraper: in THIS repo no
+    engine calls `scrape_url()` or `scraping_browser_connection_url()` —
+    perplexity reads articles from /rest/article/ inside a live page,
+    which a browserless fetch cannot do. The engines' Browser API path
+    is `--cdp-endpoint` / PERPLEXITY_CDP_ENDPOINT.
 
 Never construct a competitor's API call from this module.
 """
@@ -154,8 +155,8 @@ class TwoCaptchaClient:
         self.api_base = api_base or API_BASE
         # Same reasoning, same escape hatch, but a SEPARATE override and a
         # SEPARATE default — the Scraper API lives on its own hostname
-        # (`scraper.2captcha.com`), not `api.2captcha.com`. `--scraper-api-
-        # url` (testing only) sets this; `--captcha-api` above never does.
+        # (`scraper.2captcha.com`), not `api.2captcha.com`. Only a caller
+        # passing `scraper_api_base=` sets this; `--captcha-api` never does.
         self.scraper_api_base = scraper_api_base or SCRAPER_API_BASE
 
     def _require_key(self) -> str:
@@ -292,7 +293,7 @@ class TwoCaptchaClient:
         if len(accounts) != 1:
             raise TwoCaptchaError(
                 "Browser API needs exactly one matching account; configure an account for the "
-                "requested country and select it with --scraper-api-account-id"
+                "requested country and select it with account_id"
             )
         selected_id = accounts[0].get("id")
         payload = {"key": key, "accountId": selected_id}
@@ -362,19 +363,13 @@ class TwoCaptchaClient:
         to match what the API actually accepts, not what its own docs
         say. `cdp_url` (2Captcha's `cdpurl` field) lets a caller point
         this fetch at a CDP session THEY already control instead of
-        2Captcha's own default browser pool. Every engine's `--scraper-
-        api-cdp` (added 2026-09-28) fills this with
-        `scraping_browser_connection_url()`'s own output — chaining this
-        product to 2Captcha's OWN Scraping Browser, not a caller-supplied
-        `--cdp-endpoint` (kept separate on purpose: an arbitrary CDP
-        session isn't known to support this field the way 2Captcha's own
-        does) — which is what gets this endpoint real captcha auto-solve
+        2Captcha's own default browser pool. Fill it with
+        `scraping_browser_connection_url()`'s own output — 2Captcha's OWN
+        Scraping Browser, not an arbitrary CDP session (one isn't known to
+        support this field) — to get this endpoint real captcha auto-solve
         (this endpoint alone has none) and the country pinning described
-        in the module docstring. Documented by 2Captcha; a real caller
-        now exists (`--scraper-api-cdp`), but neither this client nor any
-        engine has exercised it against a live 2Captcha/shein.com session
-        yet — confirmed wired, not a confirmed bypass or a confirmed
-        working captcha solve (TESTING.md)."""
+        in the module docstring. No caller in this repo (see the module
+        docstring)."""
         key = self._require_key()
         payload = {
             "task_type": "scrape",
