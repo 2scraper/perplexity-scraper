@@ -3,11 +3,14 @@
 *.csv
 !sample_output.json
 !sample_output.csv
+!tests/fixtures/*.json
 perplexity_results.*
 *_debug.html
 *_debug_*.html
 *_debug.png
 live_results/
+live/
+*.page[0-9]*
 
 # python
 __pycache__/
@@ -17,8 +20,9 @@ __pycache__/
 *.egg-info/
 dist/
 build/
-.venv/
 venv/
+.venv/
+.venv-*/
 env/
 
 # node (puppeteer/selenium tooling, if any local scripts are added later)
@@ -30,8 +34,9 @@ node_modules/
 .idea/
 .vscode/
 
-# secrets
+# secrets — `.env*` so a `.env.bak`/`.env.local` copy is never one `git add -A` away (CLAUDE.md §22)
 *.log
-.env
+.env*
+!.env.example
 *.key
 secrets*
