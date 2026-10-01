@@ -15,8 +15,7 @@ RUN pip install --no-cache-dir -r requirements-playwright.txt \
 # guarded, not the file's presence) — leaving either module out here makes
 # `RUN python3 smoke_test.py` crash the build with a plain
 # ModuleNotFoundError, before ever reaching the guarded-import checks it
-# exists to run (same lesson the rest of the family's Dockerfiles
-# document). Copying the .py file costs nothing: selenium/pyppeteer aren't
+# exists to run. Copying the .py file costs nothing: selenium/pyppeteer aren't
 # installed in this image, so their own try/except ImportError guard is
 # exactly what fires, the same as smoke_test.py's no-engine-installed path
 # in CI.
