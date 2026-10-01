@@ -9,6 +9,11 @@ rather than being a silent violation of that.
 
 ## [Unreleased]
 
+## [0.1.0] — 2026-10-01
+
+First public release. Everything below was developed before it; the
+entries are kept in the order they were written.
+
 ### Changed — 2026-10-01, failure accounting, URL validation, no undeliverable captcha purchases
 - A failed article (parse, API, navigation or content-read failure) no
   longer hides the rows that did succeed: the run is `partial` (exit 6)
@@ -261,3 +266,6 @@ rather than being a silent violation of that.
   just a reasonable bet (the OG-meta path). See README "Read this before
   trusting a run" and `TESTING.md` for exactly what's confirmed versus
   guessed, and what the first live run against this site should check.
+
+[Unreleased]: https://github.com/2scraper/perplexity-scraper/compare/v0.1.0...HEAD
+[0.1.0]: https://github.com/2scraper/perplexity-scraper/releases/tag/v0.1.0
