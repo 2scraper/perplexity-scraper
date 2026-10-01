@@ -257,13 +257,15 @@ def finish_run(
     max_results: Optional[int] = None,
     rate_limited: bool = False,
     total_results: Optional[int] = None,
+    incomplete_reason: Optional[str] = None,
+    capped: Optional[bool] = None,
 ) -> int:
     """Decide status/exit code, write output + sidecar (or neither), return
     the process exit code. NEVER writes a sidecar for a failed run, and
     NEVER overwrites a previous good output with an empty one unless the
     caller explicitly passed --allow-empty."""
     failed_pages = failed_pages or []
-    partial = bool(failed_pages) and pages_completed > 0
+    partial = bool(failed_pages) or bool(incomplete_reason)
     zero_products = len(products) == 0
 
     # Outcome precedence — decided ONCE, independent of --allow-empty.
@@ -285,15 +287,18 @@ def finish_run(
             status, exit_code = "remote_api_error", EXIT_REMOTE_API_ERROR
         elif blocked:
             status, exit_code = "blocked", EXIT_BLOCKED
+        elif partial or rejected_rows:
+            status, exit_code = "remote_api_error", EXIT_REMOTE_API_ERROR
         else:
             status, exit_code = "empty", EXIT_ZERO_PRODUCTS
-        stop_reason = status
+        stop_reason = ("rate_limited" if rate_limited and blocked else incomplete_reason
+                       or ("failed_pages" if failed_pages and not blocked and not remote_api_error else status))
     elif remote_api_error or blocked or partial or rejected_rows:
         status, exit_code = "partial", EXIT_PARTIAL
         # A throttle is not a block (CLAUDE.md §24): "blocked" sends the
         # reader to buy a proxy, "rate_limited" to slow down.
         stop_reason = ("remote_api_error" if remote_api_error else "rate_limited" if rate_limited and blocked
-                       else "blocked" if blocked else "failed_pages" if partial else "rejected_rows")
+                       else "blocked" if blocked else incomplete_reason or ("failed_pages" if partial else "rejected_rows"))
     else:
         status, exit_code = "complete", EXIT_OK
         stop_reason = status
@@ -320,7 +325,7 @@ def finish_run(
     # exact output file beside it.
     if max_results is not None:
         extra["max_results"] = max_results
-        extra["capped"] = len(products) >= max_results
+        extra["capped"] = len(products) >= max_results if capped is None else capped
     if total_results is not None:
         extra["total_results"] = total_results  # what the site says exists, vs product_count collected
     extra["output_sha256"] = hashlib.sha256(Path(out_path).read_bytes()).hexdigest()

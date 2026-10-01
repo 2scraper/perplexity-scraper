@@ -123,7 +123,10 @@ def is_page_url(url: str) -> bool:
 
 
 def is_disallowed_path(url: str) -> bool:
-    path = urlparse(url).path
+    try:
+        path = urlparse(url).path
+    except ValueError:
+        return False  # article_ref rejects malformed URLs
     return any(path.startswith(prefix) for prefix in _DISALLOWED_PATH_PREFIXES)
 
 
@@ -143,8 +146,15 @@ def article_ref(url: str) -> tuple:
     """(topic, ref) for an article URL, or (None, None). `ref` is what
     `/rest/article/{ref}` accepts: the full slug-with-id, or a backend
     uuid (what an old `/page/` link is rewritten to)."""
-    parts = urlparse(url)
-    if parts.netloc and not parts.netloc.endswith("perplexity.ai"):
+    try:
+        parts = urlparse(url)
+        valid = (parts.scheme in ("http", "https")
+                 and parts.hostname in ("perplexity.ai", "www.perplexity.ai")
+                 and parts.username is None and parts.password is None
+                 and parts.port in (None, 80 if parts.scheme == "http" else 443))
+    except ValueError:
+        return None, None
+    if not valid:
         return None, None
     segs = [s for s in parts.path.split("/") if s]
     if len(segs) == 2 and segs[0] == "page":
@@ -362,9 +372,9 @@ def _now_iso() -> str:
 
 def safe_parse_page(html: str, **kwargs) -> PageResult:
     """Engine entry point: a parse exception degrades this ONE url to
-    "nothing found" instead of crashing the batch (CLAUDE.md §6/§10)."""
+    a rejected result instead of crashing the batch (CLAUDE.md §6/§10)."""
     try:
         return parse_page(html, **kwargs)
     except Exception as exc:  # noqa: BLE001
-        log.error("A page failed to parse — treating it as empty, not crashing: %s", exc)
+        log.error("A page failed to parse — rejecting this article: %s", exc)
         return PageResult(products=[], source_used="none")

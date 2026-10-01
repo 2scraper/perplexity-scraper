@@ -48,7 +48,6 @@ import page_flow
 import scraper_api_engine
 import scraper_api_client
 import page_parser as pp
-from captcha_solver import solve_when_blocked
 from fingerprint_client import fetch_fingerprint, refuse_if_cdp, user_agent_from
 from output_writer import EXIT_BAD_USAGE, EXIT_CRASH
 from proxy_pool import Proxy, ProxyPool, ProxyParseError, load_proxies, redact_credentials
@@ -203,24 +202,9 @@ async def _maybe_solve_captcha(
 ) -> Optional[dict]:
     if policy == "off" or client is None:
         return None
-    result = solve_when_blocked(
-        client=client, page_url=url, html=html, count_product_links=pp.count_result_cards,
-        extra_markers=pp.BOT_CHALLENGE_MARKERS, min_score=min_score,
-    )
-    action = result.get("action")
-    if action == "no_captcha_detected":
-        pass
-    elif action == "skipped_products_present":
-        log.info("Captcha widget present but the article already rendered — not solving.")
-    elif action == "warning_no_key":
-        log.warning("Captcha solving skipped: %s", result.get("detail"))
-    elif action == "warning_solver_error":
-        log.warning("Captcha solve failed: %s", result.get("detail"))
-    elif action == "solved":
-        log.info("Captcha solved via 2Captcha (%s).", result.get("captcha_type"))
-    elif action == "detected_unidentified_widget":
-        log.warning("A captcha-like marker was detected but no known widget/sitekey could be extracted.")
-    return result
+    log.warning("Local captcha solving is disabled: token delivery is not implemented; no paid task created. "
+                "Use the Scraping Browser CDP auto-solve integration.")
+    return {"action": "unsupported_delivery"}
 
 
 async def _connect_over_cdp(pw, cdp_endpoint: str):

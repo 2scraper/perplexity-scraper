@@ -29,7 +29,7 @@ COPY env_config.py proxy_pool.py output_writer.py captcha_solver.py \
 COPY .env.example sample_output.json sample_output.csv ./
 COPY tests ./tests
 
-RUN python3 smoke_test.py
+RUN python3 smoke_test.py && python3 -m unittest discover -s tests -p test_regressions.py
 
 # The test suite and its fixtures are needed to VERIFY the build above, not
 # to run the scraper — the image should carry no test suite and no stray

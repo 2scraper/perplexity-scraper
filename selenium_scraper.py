@@ -56,7 +56,6 @@ import env_config
 import page_flow
 import scraper_api_engine
 import page_parser as pp
-from captcha_solver import solve_when_blocked
 from output_writer import EXIT_BAD_USAGE, EXIT_CRASH
 from proxy_pool import Proxy, ProxyPool, ProxyParseError, load_proxies
 from fingerprint_client import fetch_fingerprint, refuse_if_cdp, user_agent_from
@@ -196,23 +195,9 @@ _STATUS_JS = (
 def _maybe_solve_captcha(*, html: str, url: str, client: Optional[TwoCaptchaClient], policy: str, min_score: float = 0.3) -> Optional[dict]:
     if policy == "off" or client is None:
         return None
-    result = solve_when_blocked(
-        client=client, page_url=url, html=html, count_product_links=pp.count_result_cards,
-        extra_markers=pp.BOT_CHALLENGE_MARKERS, min_score=min_score,
-    )
-    action = result.get("action")
-    if action == "warning_no_key":
-        log.warning("Captcha solving skipped: %s", result.get("detail"))
-    elif action == "warning_solver_error":
-        log.warning("Captcha solve failed: %s", result.get("detail"))
-    elif action == "solved":
-        log.warning(
-            "Captcha token obtained but NOT auto-injected on the Selenium "
-            "engine (unverified widget-specific step) — use "
-            "playwright_scraper.py or puppeteer_scraper.py with "
-            "--cdp-endpoint for the Scraping Browser API's built-in solve."
-        )
-    return result
+    log.warning("Local captcha solving is disabled: token delivery is not implemented; no paid task created. "
+                "Use the Scraping Browser CDP auto-solve integration.")
+    return {"action": "unsupported_delivery"}
 
 
 def _fetch_json(driver, url: str) -> tuple:

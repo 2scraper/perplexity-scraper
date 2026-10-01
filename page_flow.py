@@ -20,9 +20,9 @@ perplexity.ai answers an article request these ways, all seen live on
      headless or headful, from a residential Mac) → `blocked`. Its HTML is
      never parsed: its own heading once came out as an article titled
      "Performing security verification";
-  5. an HTTP >= 400 or an API 401/403/429 with nothing usable → `blocked`.
+  5. HTTP/API 401/403/429 → blocked; other unread responses → failure.
 
-Pure: no driver, no JavaScript, no I/O — the engines pass in what they saw.
+Triage is driver-independent; the shared async flow below consumes engine operations.
 """
 from __future__ import annotations
 
@@ -47,7 +47,7 @@ def should_retry_api(status: int, error: Optional[str]) -> bool:
     """Worth another try after a pause: refused or unreadable, not "no such article"."""
     if status in NOT_FOUND_API_STATUSES or (status == 200 and not error):
         return False
-    return status in BLOCKING_API_STATUSES or status == 0 or bool(error)
+    return status in BLOCKING_API_STATUSES or status == 0 or status >= 500 or bool(error)
 
 
 def is_challenge(html: str) -> bool:
@@ -64,6 +64,18 @@ class Outcome:
     not_found: bool
     source_used: str
     warnings: List[str] = field(default_factory=list)
+    failure: Optional[str] = None
+    rate_limited: bool = False
+
+
+@dataclass
+class DiscoveryResult:
+    urls: List[str] = field(default_factory=list)
+    failure: Optional[str] = None
+    blocked: bool = False
+    rate_limited: bool = False
+    offset: int = 0
+    capped: bool = False
 
 
 def decide(
@@ -82,16 +94,17 @@ def decide(
 
     result = pp.safe_parse_page(html, url=url, article_json=None if api_error else article_json)
     product = result.products[0] if result.source_used == "api" else None
-    if product is not None:
+    if product is not None and api_status == 200 and not api_error:
         return Outcome(product, False, False, "api", warnings)
 
     detail = f"article API HTTP {api_status or '-'}" + (f", {api_error}" if api_error else "")
-    if (http_status is not None and http_status >= 400) or api_status in BLOCKING_API_STATUSES:
+    if http_status in BLOCKING_API_STATUSES or api_status in BLOCKING_API_STATUSES:
         warnings.append(f"{url}: {detail} — blocked, not empty.")
-        return Outcome(None, True, False, "none", warnings)
+        return Outcome(None, True, False, "none", warnings, rate_limited=api_status == 429 or http_status == 429)
 
     warnings.append(f"{url}: {detail} — no article read. Re-run with --dump-html to inspect the captured page.")
-    return Outcome(None, False, False, "none", warnings)
+    return Outcome(None, False, False, "none", warnings,
+                   failure="parse_error" if api_status == 200 and not api_error else "fetch_error")
 
 
 # --------------------------------------------------------------------------- #
@@ -189,8 +202,8 @@ async def _solve_within_budget(engine: Engine, session: PageSession, args, *, ht
     return result
 
 
-async def fetch_article(engine: Engine, args, url: str, index: int, proxy_pool, client) -> tuple:
-    """One article URL: (product_or_none, blocked, nav_failed, not_found).
+async def fetch_article(engine: Engine, args, url: str, index: int, proxy_pool, client) -> Outcome:
+    """One article URL: a typed outcome, including unread and rejected data.
     Open the page (its cookies clear Cloudflare), wait out a challenge
     (bounded), solve one within budget, then read /rest/article/ with the
     page's own fetch(), retrying a refusal (API_RETRY_DELAYS_S)."""
@@ -198,9 +211,9 @@ async def fetch_article(engine: Engine, args, url: str, index: int, proxy_pool, 
     _log.info("Fetching %s (proxy: %s)", url, proxy.masked() if proxy else "(none — direct, or the --cdp-endpoint session's own exit)")
     try:
         session = await engine.open(proxy)
-    except RuntimeError as exc:
-        _log.error("Browser connection failed — treating this URL as failed, not a crash: %s", exc)
-        return None, False, True, False
+    except Exception as exc:
+        _log.error("Browser connection failed — treating this URL as failed, not a crash: %s", _redact(str(exc)))
+        return Outcome(None, False, False, "none", failure="fetch_error")
     try:
         last_error, status = None, None
         for attempt in range(args.retries + 1):
@@ -219,7 +232,7 @@ async def fetch_article(engine: Engine, args, url: str, index: int, proxy_pool, 
                     await engine.sleep(args.retry_delay)
         if last_error is not None:
             _log.error("%s permanently failed to load: %s", url, last_error)
-            return None, False, True, False
+            return Outcome(None, False, False, "none", failure="fetch_error")
 
         html = await session.content()
         waited = 0.0
@@ -243,7 +256,7 @@ async def fetch_article(engine: Engine, args, url: str, index: int, proxy_pool, 
         if not is_challenge(html):
             api_status, article_json, api_error = await session.fetch_json(pp.article_api_url(ref))
             for delay in API_RETRY_DELAYS_S:
-                if not should_retry_api(api_status, api_error):
+                if not should_retry_api(api_status, api_error) or getattr(engine, "fatal", None):
                     break
                 _log.info("%s: article API HTTP %s — retrying in %ss (a fresh profile needs the page's own bot check first).", url, api_status or "-", delay)
                 await engine.sleep(delay)
@@ -259,96 +272,148 @@ async def fetch_article(engine: Engine, args, url: str, index: int, proxy_pool, 
                 proxy_pool.report_success(proxy)
         if args.dump_html:
             _Path(_dump_path(args.out, index)).write_text(html, encoding="utf-8")
-        return outcome.product, outcome.blocked, False, outcome.not_found
+        if getattr(engine, "last_remote_error", False) and outcome.product is None:
+            outcome.failure = "remote_api_error"
+        return outcome
+    except Exception as exc:
+        _log.warning("Article operation failed for %s: %s", url, _redact(str(exc)))
+        return Outcome(None, False, False, "none", failure="fetch_error")
     finally:
+        await _close_session(session)
+
+
+async def _close_session(session):
+    try:
         await session.close()
+    except Exception as exc:
+        _log.warning("Session cleanup failed: %s", _redact(str(exc)))
 
 
-async def collect_discover(engine: Engine, args, topic: str, limit: int, proxy_pool) -> tuple:
-    """(urls, error) from the Discover feed, 20 per call by offset, until
-    `limit` distinct URLs or the feed runs out. `error` only when even the
-    first page could not be read."""
-    proxy = proxy_pool.next() if proxy_pool else None
+async def collect_discover(engine: Engine, args, topic: str, limit: int, proxy_pool) -> DiscoveryResult:
+    result = DiscoveryResult()
+    session = None
     try:
-        session = await engine.open(proxy)
-    except RuntimeError as exc:
-        return [], f"browser connection failed: {exc}"
-    urls: List[str] = []
-    try:
-        try:
-            await session.goto(pp.DISCOVER_URL)
-        except Exception as exc:  # noqa: BLE001
-            return [], f"could not open {pp.DISCOVER_URL}: {_redact(str(exc)).splitlines()[0]}"
-        offset = 0
-        while len(urls) < limit:
-            status, data, error = await session.fetch_json(pp.discover_feed_api_url(topic, offset=offset))
+        session = await engine.open(proxy_pool.next() if proxy_pool else None)
+        await session.goto(pp.DISCOVER_URL)
+        html = await session.content()
+        for _ in range(CHALLENGE_WAIT_S):
+            if not is_challenge(html):
+                break
+            await session.wait(1)
+            try:
+                html = await session.content()
+            except Exception:  # noqa: BLE001 — mid-navigation while the challenge redirects
+                continue
+        if is_challenge(html):
+            result.failure, result.blocked = "blocked", True
+            return result
+        while len(result.urls) < limit:
+            target = pp.discover_feed_api_url(topic, offset=result.offset)
+            status, data, error = await session.fetch_json(target)
+            for delay in API_RETRY_DELAYS_S:
+                if not should_retry_api(status, error) or getattr(engine, "fatal", None):
+                    break
+                await engine.sleep(delay)
+                status, data, error = await session.fetch_json(target)
             if error or status != 200:
-                if not urls:
-                    return [], f"Discover feed HTTP {status or '-'}: {error or 'unexpected status'}"
-                _log.warning("Discover feed page at offset %d failed (HTTP %s) — keeping the %d URLs collected.", offset, status or "-", len(urls))
+                result.blocked = status in BLOCKING_API_STATUSES
+                result.rate_limited = status == 429
+                result.failure = ("remote_api_error" if getattr(engine, "last_remote_error", False)
+                                  else "rate_limited" if result.rate_limited
+                                  else "blocked" if result.blocked else "fetch_error")
+                break
+            if not isinstance(data, dict) or not isinstance(data.get("items"), list):
+                result.failure = "parse_error"
                 break
             page_urls, has_more = pp.parse_discover_feed(data, topic=topic)
-            new = [u for u in page_urls if u not in urls]
-            urls.extend(new)
-            if not new or not has_more:
+            if len(page_urls) != len(data["items"]) or any(not pp.is_page_url(u) for u in page_urls):
+                result.failure = "parse_error"
                 break
-            offset += len(page_urls)
-            await engine.sleep(args.delay_between_pages)
-        return urls[:limit], None
+            new = list(dict.fromkeys(u for u in page_urls if u not in result.urls))
+            result.urls.extend(new)
+            result.capped = len(result.urls) > limit or (len(result.urls) == limit and has_more)
+            if not has_more:
+                break
+            if not new:
+                result.failure = "pagination_stalled"
+                break
+            result.offset += len(data["items"])
+            if len(result.urls) < limit:
+                await engine.sleep(args.delay_between_pages)
+        result.urls = result.urls[:limit]
+        return result
+    except Exception as exc:
+        _log.warning("Discover operation failed: %s", _redact(str(exc)))
+        result.failure = "fetch_error"
+        return result
     finally:
-        await session.close()
+        if session is not None:
+            await _close_session(session)
 
 
 async def run(engine: Engine, args, *, urls: List[str], discover_topic: Optional[str], proxy_pool, client,
               started_at: float) -> int:
-    """Discover (if asked), every URL in order, then the one finish_run."""
-    remote_api_error = False
+    discovery = None
     if discover_topic:
-        urls, error = await collect_discover(engine, args, discover_topic, args.max_results, proxy_pool)
-        if error:
-            _log.error("Discover feed unavailable — treating as remote_api_error: %s", error)
-            remote_api_error = True
-        elif not urls:
-            _log.warning("Discover topic %r returned no articles.", discover_topic)
-        else:
-            _log.info("Discover topic %r: %d article URL(s) to fetch.", discover_topic, len(urls))
+        discovery = await collect_discover(engine, args, discover_topic, args.max_results, proxy_pool)
+        urls = discovery.urls
+        if discovery.failure:
+            _log.warning("Discover incomplete at offset %s: %s", discovery.offset, discovery.failure)
     products: List[Product] = []
     failed_pages: List[int] = []
-    any_blocked = False
+    failures = []
+    any_blocked = bool(discovery and discovery.blocked)
+    rate_limited = bool(discovery and discovery.rate_limited)
+    remote_api_error = bool(discovery and discovery.failure == "remote_api_error")
     completed = 0
-    batch = [] if remote_api_error else urls[: args.max_results]
+    batch = urls[:args.max_results]
     for i, url in enumerate(batch, start=1):
-        product, blocked, nav_failed, not_found = await fetch_article(engine, args, url, i, proxy_pool, client)
-        if nav_failed:
+        outcome = await fetch_article(engine, args, url, i, proxy_pool, client)
+        any_blocked = any_blocked or outcome.blocked
+        rate_limited = rate_limited or outcome.rate_limited
+        remote_api_error = remote_api_error or outcome.failure == "remote_api_error"
+        if outcome.failure or outcome.blocked:
             failed_pages.append(i)
+            failures.append({"url": url, "reason": outcome.failure or ("rate_limited" if outcome.rate_limited else "blocked")})
         else:
             completed += 1
-            any_blocked = any_blocked or blocked
-            if product is not None:
-                products.append(product)
-            elif not blocked and not not_found and getattr(engine, "last_remote_error", False):
-                # Nothing read because the fetch service itself failed
-                # (scraper_api_engine), not because the site had nothing.
-                remote_api_error = True
+        if outcome.product is not None:
+            products.append(outcome.product)
+        if getattr(engine, "fatal", None):
+            for j, pending in enumerate(batch[i:], i + 1):
+                failed_pages.append(j)
+                failures.append({"url": pending, "reason": "remote_api_error"})
+            break
         if i < len(batch):
             await engine.sleep(args.delay_between_pages)
     return finish(args, products=products, blocked=any_blocked, remote_api_error=remote_api_error,
                   engine_name=engine.name, urls=urls, discover_topic=discover_topic, started_at=started_at,
-                  pages_completed=completed, failed_pages=failed_pages)
+                  pages_completed=completed, failed_pages=failed_pages, failures=failures,
+                  discovery=discovery, rate_limited=rate_limited)
 
 
 def finish(args, *, products: List[Product], blocked: bool, remote_api_error: bool, engine_name: str,
            urls: List[str], discover_topic: Optional[str], started_at: float, pages_completed: int,
-           failed_pages: List[int]) -> int:
+           failed_pages: List[int], failures=None, discovery=None, rate_limited=False) -> int:
     budget = getattr(args, "_solve_budget", None)
     label = f"{pp.DISCOVER_URL} (topic={discover_topic})" if discover_topic else (urls[0] if urls else "")
+    selection = ({"mode": "discover", "topic": discover_topic, "max_results": args.max_results}
+                 if discover_topic else {"mode": "urls", "urls": urls, "max_results": args.max_results})
+    extra = {"solves_spent": budget.spent if budget is not None else 0, "discover_topic": discover_topic,
+             "selection": selection, "failed_urls": failures or []}
+    if discovery is not None:
+        extra["discovery"] = {"complete": discovery.failure is None, "stop_reason": discovery.failure,
+                              "offset": discovery.offset, "urls_collected": len(discovery.urls)}
     return _finish_run(
         products=products, out_path=args.out, fmt=args.format, engine=engine_name, url=label,
         pages_requested=len(urls[: args.max_results]), pages_completed=pages_completed,
         failed_pages=failed_pages or None, blocked=blocked, remote_api_error=remote_api_error,
         allow_empty=args.allow_empty, started_at=started_at, price_confirmed_pct=None,
-        max_results=args.max_results,
-        extra_meta={"solves_spent": budget.spent if budget is not None else 0, "discover_topic": discover_topic},
+        max_results=args.max_results, rate_limited=rate_limited,
+        incomplete_reason=(discovery.failure if discovery and discovery.failure else
+                           next((f["reason"] for f in (failures or []) if f["reason"] == "parse_error"), None)),
+        capped=discovery.capped if discovery else len(urls) > args.max_results,
+        extra_meta=extra,
     )
 
 

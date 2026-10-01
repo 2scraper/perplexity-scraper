@@ -75,7 +75,7 @@ _PLACEHOLDER_WORD_SET = {w for phrase in PLACEHOLDER_WORDS for w in _words(phras
 # relying on that alone is exactly the "two independent checks for the
 # same thing WILL drift apart" trap — filtering by name here too means a
 # stale or incomplete .gitignore degrades to redundant, not broken.
-_NOT_SOURCE_DIR = re.compile(r"(^|/)(\.venv[^/]*|venv|env|node_modules|__pycache__|\.git)(/|$)")
+_NOT_SOURCE_DIR = re.compile(r"(^|/)(\.venv[^/]*|venv|env|node_modules|build|dist|__pycache__|\.git)(/|$)")
 
 
 def _in_virtualenv(relative: str) -> bool:

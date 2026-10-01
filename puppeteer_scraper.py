@@ -54,7 +54,6 @@ import page_flow
 import scraper_api_engine
 import scraper_api_client
 import page_parser as pp
-from captcha_solver import solve_when_blocked
 from output_writer import EXIT_BAD_USAGE, EXIT_CRASH
 from fingerprint_client import fetch_fingerprint, refuse_if_cdp, user_agent_from
 from proxy_pool import Proxy, ProxyPool, ProxyParseError, load_proxies, redact_credentials
@@ -173,18 +172,9 @@ async def _enable_scraping_browser_auto_solve(page) -> None:
 async def _maybe_solve_captcha(*, html: str, url: str, client: Optional[TwoCaptchaClient], policy: str, min_score: float = 0.3) -> Optional[dict]:
     if policy == "off" or client is None:
         return None
-    result = solve_when_blocked(
-        client=client, page_url=url, html=html, count_product_links=pp.count_result_cards,
-        extra_markers=pp.BOT_CHALLENGE_MARKERS, min_score=min_score,
-    )
-    action = result.get("action")
-    if action == "warning_no_key":
-        log.warning("Captcha solving skipped: %s", result.get("detail"))
-    elif action == "warning_solver_error":
-        log.warning("Captcha solve failed: %s", result.get("detail"))
-    elif action == "solved":
-        log.info("Captcha solved via 2Captcha (%s).", result.get("captcha_type"))
-    return result
+    log.warning("Local captcha solving is disabled: token delivery is not implemented; no paid task created. "
+                "Use the Scraping Browser CDP auto-solve integration.")
+    return {"action": "unsupported_delivery"}
 
 
 async def _release(browser, *, remote: bool) -> None:

@@ -9,6 +9,28 @@ rather than being a silent violation of that.
 
 ## [Unreleased]
 
+### Changed — 2026-10-01, failure accounting, URL validation, no undeliverable captcha purchases
+- A failed article (parse, API, navigation or content-read failure) no
+  longer hides the rows that did succeed: the run is `partial` (exit 6)
+  and the sidecar lists each failed URL with its reason (`failed_urls`).
+  A run that read nothing because of such failures is exit 5, not "empty".
+- API 5xx and Discover refusals are retried. A Discover failure part-way
+  is reported (`discovery.complete: false`, `stop_reason`) instead of a
+  complete run over the URLs collected so far; a blocked feed is told
+  apart from a transport/provider failure and from a genuinely empty one.
+- `diff_runs` binds a comparison to the full input selection and limit
+  (sidecar `selection`); `capped` tracks Discover truncation, not the row
+  count.
+- Article URLs must be http(s) on perplexity.ai / www.perplexity.ai, with
+  no credentials and no non-default port; relative and foreign URLs are
+  rejected.
+- Local captcha solving is disabled: a token was bought but never
+  delivered to the page. No paid task is created; the Scraping Browser's
+  CDP auto-solve is unchanged.
+- CI and the Docker build run the offline regression suite
+  (`tests/test_regressions.py`); the credential scan skips `build/` and
+  `dist/`.
+
 ### Added — 2026-10-01, `--scraper-api`: no browser, 2Captcha's Scraper API
 - New `scraper_api_engine.py`, a `page_flow` engine with no page: the
   Discover feed and every `/rest/article/` call are one Scraper API call

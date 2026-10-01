@@ -128,9 +128,9 @@ A real row from a run on 2026-09-30 (`sample_output.json` has two;
 
 1. Open the article page, so the browser holds the site's cookies. If
    Cloudflare shows a challenge, wait up to 15s for it to clear by
-   itself. Over `--cdp-endpoint` the Browser API clears it; a page with a
-   solvable widget (Turnstile, reCAPTCHA, hCaptcha) goes to 2Captcha if a
-   key is set (`--solve-captcha`, within `--max-solves`).
+   itself. Over `--cdp-endpoint` the Browser API solves challenges
+   itself (`--solve-captcha off` turns that off). A local browser has no
+   solver: nothing is bought, and the URL is reported as blocked.
 2. Call `/rest/article/{id}` with `fetch()` from inside the page. A
    refused call is retried after 3, 5, 8 and 15s: a fresh profile's first
    call is often refused, and the API throttles bursts.
@@ -165,7 +165,8 @@ minutes, then worked again.
 ## Run results and exit codes
 
 Every run writes `<out>` and `<out>.meta.json` (status, `stop_reason`,
-URLs requested and completed, failed URLs, article count, whether
+URL counts, failed URLs with reasons, full input selection, discovery
+completeness, article count, whether
 `--max-results` capped it, solves spent, and a hash of the output file).
 A run that collects nothing writes neither, so it never replaces your
 previous good file.
@@ -173,10 +174,10 @@ previous good file.
 | Exit | Meaning |
 |---|---|
 | `0` | complete |
-| `6` | partial: rows were written, but the run did not finish cleanly — `stop_reason` says why (`blocked`, `rate_limited`, `remote_api_error`, `failed_pages`, `rejected_rows`) |
+| `6` | partial: rows were written, but the run did not finish cleanly — `stop_reason` says why (`blocked`, `rate_limited`, `remote_api_error`, `failed_pages`, `rejected_rows`, `parse_error`, `fetch_error`, `pagination_stalled`) |
 | `3` | blocked or throttled, no rows |
-| `4` | nothing read and nothing blocked (e.g. a Discover topic with no items) |
-| `5` | a remote service failed (the Scraping Browser connection, the Scraper API, the 2Captcha key or balance), no rows |
+| `4` | confirmed empty selection or only not-found articles |
+| `5` | nothing could be read due to fetch, parse, or remote-service failure; no rows |
 | `2` | bad usage, including input where every URL was skipped |
 | `1` | crash (a bug; please report it) |
 
@@ -184,7 +185,8 @@ previous good file.
 
 `diff_runs.py old.json new.json` compares two complete runs by `sku`:
 articles added and removed. It refuses comparisons that would mislead:
-two runs of different selections, or a `.meta.json` that does not match
+two runs of different selections (including the full URL list and limit),
+or a `.meta.json` that does not match
 its file. When a run was capped by `--max-results`, an article missing
 from the new run is listed as `left_selection` (it dropped out of the
 top N), not as removed. `--json` prints the diff as JSON.
@@ -205,9 +207,8 @@ the command line.
 | `--scraper-api` | off | no browser: fetch through 2Captcha's Scraper API, routed through that profile (needs `TWOCAPTCHA_KEY`) |
 | `--proxy` / `--proxy-file` / `--proxy-shuffle` | `PERPLEXITY_PROXY` | one proxy or a rotating pool, for a local browser |
 | `--proxy-block-retries` | 3 | proxy failures in a row before that proxy is dropped from the pool |
-| `--solve-captcha` | when-blocked | `off` / `when-blocked` / `always` |
-| `--max-solves` | 8 | paid 2Captcha solves per run (0 = never pay) |
-| `--min-score` | 0.3 | minimum reCAPTCHA v3 score asked of 2Captcha |
+| `--solve-captcha` | when-blocked | `off` disables the Browser API's own captcha auto-solve; there is no local solver |
+| `--max-solves` / `--min-score` | 8 / 0.3 | kept for the local solver, which is disabled; they change nothing today and do not cap the Browser API's own charges |
 | `--retries` / `--retry-delay` | 2 / 3s | navigation retries per article |
 | `--fingerprint` / `--fp-tags` / `--fp-country` | off | apply a 2Captcha Fingerprint API user agent (local browsers only) |
 | `--dump-html` | off | save each page's HTML next to the output, for debugging |
@@ -243,8 +244,8 @@ Chromium.
 ## Known limitations
 
 - **Local browsers are blocked by Cloudflare** in every test so far; the
-  run exits 3. Use `--cdp-endpoint`. The challenge served is Cloudflare's
-  managed page, which carries no widget 2Captcha can be sent, so a key
+  run exits 3. Use `--cdp-endpoint`. Local captcha solving is disabled
+  (a bought token could not be delivered to the page), so a 2Captcha key
   does not help a local run.
 - **Only the `top` Discover topic has items** for an anonymous visitor.
   Other topics return an empty feed (exit 4).
@@ -261,6 +262,7 @@ Chromium.
 ```bash
 python3 smoke_test.py            # 60 offline checks, no network, no engine needed
 python3 .github/ci_checks.py     # credential scan
+python3 -m unittest discover -s tests -p test_regressions.py  # failure and recovery scenarios
 ```
 
 Parser checks run on real captures in `tests/fixtures/`. CI runs the

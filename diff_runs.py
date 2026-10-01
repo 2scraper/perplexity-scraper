@@ -92,6 +92,8 @@ def diff(old_path: str, new_path: str, *, allow_different_scope: bool = False) -
             f"error: refusing to diff runs with different --sort ({old_meta.get('sort')!r} vs "
             f"{new_meta.get('sort')!r}) — a capped top-N under another ordering is another selection."
         )
+    if not allow_different_scope and old_meta.get("selection") != new_meta.get("selection"):
+        raise SystemExit("error: refusing to diff different input selections (or legacy metadata without selection).")
     capped = bool(old_meta.get("capped") or new_meta.get("capped"))
 
     old_rows, new_rows = _index_by_sku(_load_rows(old_path)), _index_by_sku(_load_rows(new_path))
