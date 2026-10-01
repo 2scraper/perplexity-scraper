@@ -128,8 +128,9 @@ A real row from a run on 2026-09-30 (`sample_output.json` has two;
 
 1. Open the article page, so the browser holds the site's cookies. If
    Cloudflare shows a challenge, wait up to 15s for it to clear by
-   itself, then try 2Captcha's solver if a key is set (`--solve-captcha`,
-   within `--max-solves`).
+   itself. Over `--cdp-endpoint` the Browser API clears it; a page with a
+   solvable widget (Turnstile, reCAPTCHA, hCaptcha) goes to 2Captcha if a
+   key is set (`--solve-captcha`, within `--max-solves`).
 2. Call `/rest/article/{id}` with `fetch()` from inside the page. A
    refused call is retried after 3, 5, 8 and 15s: a fresh profile's first
    call is often refused, and the API throttles bursts.
@@ -242,7 +243,9 @@ Chromium.
 ## Known limitations
 
 - **Local browsers are blocked by Cloudflare** in every test so far; the
-  run exits 3. Use `--cdp-endpoint`.
+  run exits 3. Use `--cdp-endpoint`. The challenge served is Cloudflare's
+  managed page, which carries no widget 2Captcha can be sent, so a key
+  does not help a local run.
 - **Only the `top` Discover topic has items** for an anonymous visitor.
   Other topics return an empty feed (exit 4).
 - **The API throttles bursts.** Keep `--delay-between-pages` at 2s or
