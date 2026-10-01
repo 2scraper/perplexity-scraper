@@ -103,7 +103,7 @@ def _nonnegative_float(value: str) -> float:
 
 def build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        description="perplexity.ai Pages scraper — Playwright engine",
+        description="perplexity.ai article scraper (Pages and Discover) — Playwright engine",
         epilog="Credentials belong in .env / PERPLEXITY_PROXY / TWOCAPTCHA_KEY — never on this command line.",
     )
     p.add_argument("--url", default=None, help="One article URL: https://www.perplexity.ai/page/... or .../discover/{topic}/... (or set PERPLEXITY_URL) — overrides --urls-file/--discover")
@@ -124,11 +124,11 @@ def build_arg_parser() -> argparse.ArgumentParser:
     p.add_argument("--solve-captcha", choices=["off", "when-blocked", "always"], default="when-blocked")
     p.add_argument("--max-solves", type=_nonnegative_int, default=8, help="Cap on PAID 2Captcha solves for the whole run (0 = never pay); recorded as solves_spent")
     p.add_argument("--min-score", type=float, default=0.3, help="Minimum acceptable reCAPTCHA v3 score (2Captcha's minScore task field)")
-    p.add_argument("--cdp-endpoint", default=None, help="Connect to a remote CDP session (e.g. the 2Captcha Scraping Browser API) instead of launching locally (or set PERPLEXITY_CDP_ENDPOINT) — opt-in, not required for a normal run")
+    p.add_argument("--cdp-endpoint", default=None, help="Connect to a remote CDP session (e.g. the 2Captcha Scraping Browser API) instead of launching locally (or set PERPLEXITY_CDP_ENDPOINT) — the recommended setup: Cloudflare blocks local browsers")
     p.add_argument("--fingerprint", action="store_true", help="Fetch and apply a 2Captcha Fingerprint API profile (ignored with --cdp-endpoint — see fingerprint_client.refuse_if_cdp)")
     p.add_argument("--fp-tags", default=None, help="Fingerprint API filter, e.g. 'Windows,Chrome'")
     p.add_argument("--fp-country", default=None, help="Fingerprint API filter, e.g. 'us'")
-    p.add_argument("--allow-empty", action="store_true", help="Write output even if zero Pages were found")
+    p.add_argument("--allow-empty", action="store_true", help="Write output even if zero articles were found")
     p.add_argument("--dump-html", action="store_true", help="Save each fetched page's HTML next to --out, on success too")
     p.add_argument("--headless", dest="headless", action="store_true", default=True)
     p.add_argument("--headful", dest="headless", action="store_false")

@@ -32,7 +32,7 @@ What the site actually is today:
     JSON-LD, and the Open Graph tags are the site-wide defaults on every
     page (`og:title` "Perplexity", `og:url` the origin). A parser that
     believed them would emit the same "Perplexity" row for every URL, so
-    `extract_og_meta()` output is used only when it is NOT that default.
+    nothing is read from them.
   - `GET /rest/discover/feed?limit=N&offset=K&topic=top` is the Discover
     listing (20 per call, paged by `offset`). Other topic slugs from
     `/rest/discover/topics` (tech, finance, arts, sports, entertainment)

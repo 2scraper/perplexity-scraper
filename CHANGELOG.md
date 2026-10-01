@@ -9,6 +9,40 @@ rather than being a silent violation of that.
 
 ## [Unreleased]
 
+### Changed — 2026-10-01, one shared fetch loop; docs brought up to date
+- **One fetch loop.** Navigate, wait out a Cloudflare challenge, solve
+  within budget, read `/rest/article/` with retries: this was copied into
+  each of the three engines. It now lives once in
+  `page_flow.fetch_article()`; each engine supplies an `Engine` whose
+  page sessions expose `goto`, `content`, `fetch_json`, `wait` and
+  `close`, so no JavaScript crosses the boundary. `resolve_urls()` is
+  shared too.
+- **`--max-solves`** (default 8): one cap on PAID captcha solves for the
+  whole run (`0` = never pay), recorded in the sidecar as
+  `solves_spent`.
+- CI: the Docker image (build, entrypoint, a real Chromium launch, no
+  `.env`/tests/fixtures inside) is its own `docker` job.
+- Docs: README, TESTING.md, CONTRIBUTING.md, SECURITY.md and the landing
+  page rewritten where they still described the first build's HTML
+  parsing (JSON-LD / Open Graph / DOM), "local-first" and "no live
+  capture yet". `scraper_api_client.py` no longer names
+  `--scraper-api*` flags this repo never had.
+- Re-verified live over a US Browser API profile: Playwright and
+  Puppeteer, 2 URLs and Discover (25 and 5), all `complete`, 0 solves
+  (TESTING.md).
+
+### Changed — 2026-09-30, shared core synced with shein-scraper
+- `output_writer`: rows plus an unfinished run is `partial` (exit 6) with
+  a `stop_reason`; the sidecar gains `max_results`, `capped`,
+  `total_results` and `output_sha256`.
+- `diff_runs`: refuses to compare different selections, adds a
+  `currency_changed` bucket, checks the output hash.
+- `captcha_solver` and `scraper_api_client` match the family core,
+  including `connect_with_retry` for an expiring CDP endpoint.
+- `.github/ci_checks.py`: the credential scan and `--sample-check`; CI
+  imports the built wheel outside the checkout.
+- `.gitignore`: `.env*` (except `.env.example`), `live/`, `.venv-*/`.
+
 ### Changed — 2026-09-30, canary on the Browser API; honest setup badge
 - `canary.yml`: the local-browser job is removed. Cloudflare blocked every
   local browser tried, so it could only ever be red. The remaining job
@@ -176,7 +210,7 @@ rather than being a silent violation of that.
   `sample_output.json`/`.csv` (clearly marked as such — no real capture
   exists yet, per CLAUDE.md §15).
 
-### Known gap, read before trusting anything above
+### Known gap at the initial build (closed 2026-09-30 — see above)
 - **No live browser capture of perplexity.ai exists yet.** Direct HTTP
   access to the site is blocked from every automated shell available
   while building this repo (a cloud sandbox and a separate sandboxed VM

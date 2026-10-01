@@ -8,23 +8,27 @@
 ![engines](https://img.shields.io/badge/engines-Playwright%20%7C%20Selenium%20%7C%20Puppeteer-informational)
 ![setup](https://img.shields.io/badge/setup-Browser%20API%20%28CDP%29-informational)
 
-A [Perplexity](https://www.perplexity.ai/) article scraper: classic Pages
-(`/page/...`) and Discover articles (`/discover/{topic}/...`) in — one URL,
-a file of them, or the Discover feed itself — one row of
-title/author/summary/sources/engagement data out per article. Three engines (Playwright primary, Selenium and
-Puppeteer/pyppeteer for parity), JSON or CSV output, an open, documented
-`Product` schema. Part of the [2scraper](https://github.com/2scraper)
-family — same output contract, exit codes, and family modules as
-`lidl-scraper` / `stockx-scraper` / `skyscanner-scraper`.
+**Scrape [Perplexity](https://www.perplexity.ai/) articles into clean JSON
+or CSV.** Give it a classic Page (`/page/...`), a Discover article
+(`/discover/{topic}/...`), a file of such URLs, or just the Discover feed;
+get back one row per article: title, author, summary, publish and update
+times, view/like/fork counts, every cited source, section and word counts.
+
+Three engines (Playwright primary, Puppeteer/pyppeteer and Selenium for
+parity), an open, documented `Product` schema. Part of the
+[2scraper](https://github.com/2scraper) family — same output contract,
+exit codes and shared modules as `shein-scraper`, `lidl-scraper`,
+`stockx-scraper` and `skyscanner-scraper`.
 
 ## Read this before trusting a run
 
-**Live-verified 2026-09-30.** Playwright and Puppeteer, connected to a US
-2Captcha Scraping Browser API profile over `--cdp-endpoint`, scraped real
-articles end to end: a 2024 classic Page, current Discover articles, a
-25-article `--discover top` run (25/25 rows, every applicable column
-filled), and a dead URL correctly reported as not found. `status=complete`,
-exit `0` on every run.
+**Live-verified 2026-09-30, re-run 2026-10-01.** Playwright and
+Puppeteer, connected to a US 2Captcha Scraping Browser API profile over
+`--cdp-endpoint`, scraped real articles end to end: a 2024 classic Page,
+current Discover articles, a 25-article `--discover top` run (25/25 rows,
+every applicable column filled), and a dead URL correctly reported as not
+found. `status=complete`, exit `0` on every run, no paid captcha solves.
+Run log: [`TESTING.md`](TESTING.md).
 
 What the live capture established (details in `page_parser.py`):
 
@@ -107,8 +111,8 @@ places they genuinely can't behave the same as Playwright.
 `--url --urls-file --discover --max-results --delay-between-pages --format --out
 --retries --retry-delay --proxy --proxy-file --proxy-shuffle
 --proxy-block-retries --twocaptcha-key --captcha-api --solve-captcha
---min-score --cdp-endpoint --fingerprint --fp-tags --fp-country
---allow-empty --dump-html --headless/--headful`
+--max-solves --min-score --cdp-endpoint --fingerprint --fp-tags
+--fp-country --allow-empty --dump-html --headless/--headful`
 
 Identical across all three engines — a `smoke_test.py` check asserts the
 three parsers' flag sets never drift apart. `--url` wins over
@@ -117,14 +121,17 @@ many articles are fetched this run. A URL that is not an article
 (`/page/...` or `/discover/{topic}/...` on perplexity.ai), or whose path is
 disallowed by `robots.txt`, is skipped — logged, never fetched; input made
 up entirely of such URLs is `EXIT_BAD_USAGE`. `--fingerprint`/`--fp-tags`/
-`--fp-country` apply to all three engines: each sets whatever user agent
-the 2Captcha Fingerprint API returns via its own driver's real primitive
-(Playwright's `new_context(user_agent=...)`, pyppeteer's
-`page.setUserAgent()`, Chrome's own `--user-agent=` switch under
-Selenium) — see "What this repo deliberately does NOT apply from a
-fingerprint" below. `--captcha-api` overrides the 2Captcha REST base URL
-(testing only). `--min-score` is 2Captcha's own `minScore` field on a
-`RecaptchaV3Task` request (0.3 default, matching the rest of the family).
+`--fp-country` apply to all three engines on a locally launched browser
+(ignored with `--cdp-endpoint`, which brings its own fingerprint): each
+sets whatever user agent the 2Captcha Fingerprint API returns via its own
+driver's real primitive (Playwright's `new_context(user_agent=...)`,
+pyppeteer's `page.setUserAgent()`, Chrome's own `--user-agent=` switch
+under Selenium) — see "What this repo deliberately does NOT apply from a
+fingerprint" below. `--max-solves` caps paid 2Captcha solves for the whole
+run (default 8, `0` = never pay; the sidecar records `solves_spent`). `--captcha-api`
+overrides the 2Captcha REST base URL (testing only). `--min-score` is
+2Captcha's own `minScore` field on a `RecaptchaV3Task` request (0.3
+default, matching the rest of the family).
 
 ### Family flags that don't apply here — and why
 
@@ -141,10 +148,10 @@ fingerprint" below. `--captcha-api` overrides the 2Captcha REST base URL
 - **`--concurrency` / `--proxy-rotate`**: same reasoning as
   `skyscanner-scraper`/`lidl-scraper` — no independently-addressable units
   to parallelize or rotate an exit between within a single fetch.
-  `proxy_pool.ProxyPool.worker_view()` is still ported verbatim per the
-  family's "copy the core, verbatim" rule (§7) and stays tested, for if
-  a future feature (e.g. fetching a `--urls-file` batch concurrently)
-  introduces an actual parallelizable unit.
+  `proxy_pool.ProxyPool.worker_view()` is still kept verbatim from the
+  shared family core and stays tested, for if a future feature (e.g.
+  fetching a `--urls-file` batch concurrently) introduces an actual
+  parallelizable unit.
 
 ### What this repo deliberately does NOT apply from a fingerprint
 
@@ -174,7 +181,7 @@ section_count, word_count, slug, summary, read_time_minutes, published_at, updat
 `sku` is `perplexity-{id}`, the 22-character id at the end of the
 article's canonical slug. `category` is the Discover topic (`top`) or
 `null` for a classic Page. `brand`, `price`, `currency` and `price_source`
-are always `null`: kept for the family's shared row prefix (CLAUDE.md §9).
+are always `null`: kept for the family's shared row prefix.
 `sources_json` is every distinct cited URL across all sections, as a JSON
 string (`[{"url", "title"}]`) so a CSV row stays flat. `summary` exists
 for Discover articles only. `follow_up_question_count` was removed on
@@ -185,28 +192,33 @@ the 2026-09-30 live run.
 
 **Exit codes**: `0` complete · `1` crash · `2` bad usage · `3` blocked ·
 `4` zero products (and nothing was written) · `5` remote API error · `6`
-partial. Every completed/partial run writes a `<out>.meta.json` sidecar
-with `status`, `pages_completed` (URLs actually fetched, here),
-`failed_pages` and `price_confirmed_pct` (always `null` here — see
-"Output contract" above) — **except** a failed/empty/blocked/remote-API-
-error run, which writes no sidecar and no output at all, so it can never
-overwrite a previous good run (`--allow-empty` opts out of the "don't
-write an empty result" half of that guard only — see `output_writer.
-finish_run`'s docstring for the exact precedence rule and why products
-being present never launders a blocked/remote-API-error run into
-"complete").
+partial.
+
+Every complete or partial run writes `<out>.meta.json` next to the
+output: `status`, `stop_reason`, `pages_requested`, `pages_completed`,
+`failed_pages`, `product_count`, `solves_spent`, `max_results`, `capped`,
+`output_sha256` and timestamps (`price_confirmed_pct` is always `null`
+here). A blocked, empty or remote-API-error run writes no output and no
+sidecar, so it can never overwrite a previous good run. `--allow-empty`
+lifts only the "don't write an empty result" half of that guard; rows
+being present never turn a blocked run into "complete" (see
+`output_writer.finish_run`).
 
 ## How one article is fetched
 
 1. Open the article URL and wait for it to settle. If it is a Cloudflare
    challenge, wait up to 15s for it to clear by itself, then try the
-   2Captcha solver when a key is set.
+   2Captcha solver when a key is set (`--solve-captcha`, within the run's
+   `--max-solves` budget).
 2. Call `/rest/article/{ref}` with `fetch()` from inside the page; on a
    refusal, retry after 3, 5, 8 and 15s.
-3. `page_flow.decide()` turns what was seen into one outcome, identically
-   for all three engines: an API row; not found (API 400, no row, not a
-   block); blocked (a challenge that never cleared, or the API still
-   refusing); or nothing read.
+3. `page_flow.decide()` turns what was seen into one outcome: an API row;
+   not found (API 400, no row, not a block); blocked (a challenge that
+   never cleared, or the API still refusing); or nothing read.
+
+All of this is one loop, `page_flow.fetch_article()`, shared by the three
+engines; each engine only supplies its driver's own way to open a page,
+read its HTML and call `fetch()`.
 
 A URL that fails navigation after `--retries` goes into `failed_pages` and
 the run is `partial` (exit 6) if others succeeded. `--discover TOPIC`
@@ -262,15 +274,15 @@ site):
 python3 smoke_test.py     # or: pytest tests/test_smoke.py
 ```
 
-Passes with **no** engine library installed at all (each engine guards its
-driver import behind a module-level `try/except ImportError`). Every HTML
-fixture `smoke_test.py` uses is synthetic — there is no real-capture
-fixture yet (unlike `lidl-scraper`'s `tests/fixtures/lidl_search_real.html`)
-— see `smoke_test.py`'s own module docstring.
+Offline, no network, and passes with **no** engine library installed
+(each engine guards its driver import behind `try/except ImportError`).
+The parser checks run on real captures in `tests/fixtures/`: the article
+API for a classic Page and a Discover article, the Discover feed (all
+2026-09-30), and a real Cloudflare challenge page (2026-09-21). CI
+(`.github/workflows/tests.yml`) also builds the wheel, the Docker image,
+and runs the suite once per engine in its own venv.
 
-**Testing against the live site**: see [`TESTING.md`](TESTING.md). Every
-item in it is currently open — this is the family's first repo to reach
-this stage with zero live checks done.
+**Testing against the live site**: see [`TESTING.md`](TESTING.md).
 
 ## License
 

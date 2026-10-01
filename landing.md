@@ -1,8 +1,8 @@
-# Perplexity Pages Scraper by 2scraper
+# Perplexity Scraper by 2scraper
 
-**Open-source scraper for Perplexity Pages — three engines, your own infrastructure by default, 2Captcha's paid products when you actually need them.**
+**Open-source scraper for Perplexity articles — classic Pages and Discover — three engines, run over 2Captcha's Scraping Browser API.**
 
-Pull a Page's title, author, sources/citations, view count, follow-up-question count, and section/body shape — straight from a Page URL into JSON or CSV.
+Pull an article's title, author, summary, publish and update times, view/like/fork counts, every cited source, and section and word counts — from a URL, a file of URLs, or the Discover feed — into JSON or CSV.
 
 [**View source on GitHub →**](https://github.com/2scraper/perplexity-scraper)
 
@@ -10,55 +10,33 @@ Pull a Page's title, author, sources/citations, view count, follow-up-question c
 
 ## Before you scrape: official channels
 
-Check Perplexity's own site and API offerings for anything a formal integration already covers your use case. This scraper exists for everything outside that: reading a Page's own already-published content, one URL (or a batch of them) at a time.
+Check Perplexity's own site and API offerings for anything a formal integration already covers your use case. This scraper exists for everything outside that: reading articles that are already published, one URL, a batch, or the Discover feed at a time.
 
-## Read this before you rely on it
+## What to expect
 
-**Update: a live incident now exists.** On 2026-09-21, perplexity.ai
-served a real Cloudflare managed challenge — twice, to two different
-real Page URLs — instead of any Page content. This repo's block
-detection correctly catches it (confirmed against the actual captured
-page). What it does NOT yet confirm is whether this repo's own scraper
-engines get the same treatment as a plain browser, or any selector below
-against a real, successfully-rendered Page — this was a block page, not
-a results page. Every selector in `page_parser.py` for an actual Page's
-content is still a best-effort guess — some grounded in public research
-(`robots.txt`, the sitemap, Perplexity's own announcement blog for the
-Pages feature), some just a reasonable bet (that Open Graph meta tags are
-server-rendered for sharing). What IS confirmed: Perplexity Pages are
-real, public wiki-style articles at `perplexity.ai/page/{slug}-{id}`, not
-blocked by `robots.txt`; they have no site-search mechanism — which is
-why this tool takes a URL (or a file of them) rather than a search query,
-unlike this project's sibling scrapers; and the site fronts at least some
-requests with a Cloudflare challenge. The architecture (exit codes,
-output schema, dedupe, credential handling, all three engines) is real
-and tested, same as every 2scraper repo. Full honesty section, with
-exactly what's confirmed and what's still a guess, in the [repository
-README](https://github.com/2scraper/perplexity-scraper#readme) — read it
-before you point this at anything that matters.
+Every row comes from the site's own article API (`/rest/article/`), called from inside the article page, not from the HTML. Live-verified on 2026-09-30 and again on 2026-10-01 over a US Scraping Browser API profile: Playwright and Puppeteer scraped classic Pages and Discover articles end to end, 25 of 25 on a `--discover top` run, and a dead URL was correctly reported as not found. Cloudflare blocked every local browser tried, and the run reports that (exit 3) instead of returning bad data — so the Browser API is the recommended setup. Details in the [README](https://github.com/2scraper/perplexity-scraper#readme).
 
 ## What you get
 
-- Free, open-source scraper, one script per engine — **Playwright** (primary, local-first), **Selenium**, and **Puppeteer** (via pyppeteer), all producing the identical output schema and exit codes
-- Fetch a single Page by URL, or a batch from a file — no query-based search exists for this site, so this is the actual, structural equivalent
-- Three parsing paths in priority order: schema.org JSON-LD, Open Graph/Twitter Card meta tags, then a DOM fallback for the rendered article
-- Page-specific fields other 2scraper repos don't need: author, view count, follow-up-question count, a JSON-encoded sources/citations list, section count, word count, slug, publish date
+- Free, open-source scraper, one script per engine — **Playwright** (recommended), **Puppeteer** (via pyppeteer) and **Selenium**, all producing the identical output schema and exit codes
+- One article by URL, a batch from a file, or the Discover feed (`--discover top`) up to `--max-results`
+- Article fields: author, summary, publish/update times, read time, view/like/fork counts, a JSON-encoded sources list, section and word counts, slug
 - JSON and CSV export, with a documented `Product` schema and a `.meta.json` sidecar on every completed/partial run
-- Optional 2Captcha integration, wired in but never required to get started
-- Respects `robots.txt` by construction: a disallowed path is filtered out before ever being requested, not attempted and reported as a failure
+- A run-wide cap on paid captcha solves (`--max-solves`), recorded in the sidecar
+- Respects `robots.txt` by construction: a disallowed path is filtered out before ever being requested
 
 ## 2Captcha products, when you want them
 
 | Product | What it's for |
 |---|---|
+| **Scraping Browser API — 2captcha.com** | A remote browser session over CDP with its own proxy, fingerprint and captcha auto-solve bundled — `--cdp-endpoint`. The setup this scraper was verified on |
 | **Captcha solving — [2captcha.com](https://2captcha.com)** | Detects a challenge, decides whether it's actually blocking you (not just present), solves it |
-| **Scraping Browser API — 2captcha.com** | A remote browser session over CDP with its own proxy, fingerprint and captcha auto-solve bundled — `--cdp-endpoint` |
 | **Browser fingerprints — 2captcha Fingerprint API** | Pin a specific OS/browser/country fingerprint for a locally-launched browser |
 | **Proxies — 2captcha.com/proxy** (2prx.com is the same product, different name) | Drop credentials into `.env`, rotated automatically with per-exit failure tracking |
 
 ## Who this is for
 
-Anyone who wants a Perplexity Page's already-published content (not its live "Ask AI" feature, which is explicitly out of scope) in a script rather than a browser tab — archivists, researchers tracking a set of Pages over time with `diff_runs.py`, or anyone building on top of Pages content they already have URLs for. Read the README's honesty section first: this is the newest, least-verified member of this scraper family.
+Researchers, archivists and anyone tracking Perplexity articles over time (`diff_runs.py` compares two runs), who want published article content in a script rather than a browser tab. Perplexity's live "Ask AI" answers are out of scope.
 
 ## Get started
 
@@ -66,9 +44,9 @@ Anyone who wants a Perplexity Page's already-published content (not its live "As
 git clone https://github.com/2scraper/perplexity-scraper.git
 cd perplexity-scraper
 pip install -r requirements-playwright.txt && playwright install chromium
-cp .env.example .env   # optional — not required for a normal local-first run
+cp .env.example .env   # PERPLEXITY_CDP_ENDPOINT goes here
 
-python3 playwright_scraper.py --url "https://www.perplexity.ai/page/some-article-AbCdEfGhIjKlMnOpQrStUv" --format json --out results.json
+python3 playwright_scraper.py --discover top --max-results 20 --format json --out results.json
 ```
 
 Full setup, CLI reference, and configuration details in the [repository README](https://github.com/2scraper/perplexity-scraper#readme).

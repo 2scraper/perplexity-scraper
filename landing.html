@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>2scraper — Perplexity Pages Scraper</title>
+<title>2scraper — Perplexity Scraper</title>
 <style>
   :root{
     --bg:#0F1216;
@@ -101,16 +101,16 @@
 
 <div class="board">
   <div class="board-track">
-    <span class="ontime">✓ How Tidal Power Works — 12.3k views</span>
-    <span class="delay">⏱ A Short History of Cartography — 987 views</span>
-    <span class="ontime">✓ The Physics of Bread Baking — 4.1k views</span>
-    <span class="delay">⏱ Voyager's Golden Record — 2.2k views</span>
-    <span class="ontime">✓ How Coral Reefs Form — 6.7k views</span>
-    <span class="ontime">✓ How Tidal Power Works — 12.3k views</span>
-    <span class="delay">⏱ A Short History of Cartography — 987 views</span>
-    <span class="ontime">✓ The Physics of Bread Baking — 4.1k views</span>
-    <span class="delay">⏱ Voyager's Golden Record — 2.2k views</span>
-    <span class="ontime">✓ How Coral Reefs Form — 6.7k views</span>
+    <span class="ontime">✓ /page/{slug}-{id} → title · author · sources</span>
+    <span class="ontime">✓ /discover/top → 25/25 articles</span>
+    <span class="delay">⏱ API 403 → retry 3s · 5s · 8s · 15s</span>
+    <span class="ontime">✓ view · like · fork counts</span>
+    <span class="delay">⏱ dead URL → page_not_found, no row</span>
+    <span class="ontime">✓ /page/{slug}-{id} → title · author · sources</span>
+    <span class="ontime">✓ /discover/top → 25/25 articles</span>
+    <span class="delay">⏱ API 403 → retry 3s · 5s · 8s · 15s</span>
+    <span class="ontime">✓ view · like · fork counts</span>
+    <span class="delay">⏱ dead URL → page_not_found, no row</span>
   </div>
 </div>
 
@@ -130,13 +130,13 @@
 
   <div class="hero">
     <div class="eyebrow">Open-source wiki-article data</div>
-    <h1>Runs on <span class="accent">your own infrastructure</span>.<br>2Captcha's, when you actually need it.</h1>
+    <h1>Perplexity articles, <span class="accent">straight from the site's own API</span>.</h1>
     <p class="sub">
-      Open-source scraper for Perplexity Pages — public, wiki-style
-      articles. Three engines, one documented output schema — title,
-      author, sources/citations, view count, follow-up-question count.
-      Point it at 2Captcha's Scraping Browser API over CDP when you need
-      proxies, fingerprints, and captcha solving bundled — not by default.
+      Open-source scraper for Perplexity articles — classic Pages and
+      Discover. Three engines, one documented output schema — title,
+      author, summary, sources, view/like/fork counts, publish dates.
+      Verified live over 2Captcha's Scraping Browser API, which gets past
+      the Cloudflare check that blocks a local browser.
     </p>
 
     <div class="signature">
@@ -151,7 +151,7 @@
 
         <rect class="node-box" x="245" y="12" width="150" height="40" rx="6"/>
         <text class="node-label" x="320" y="29" text-anchor="middle">--cdp-endpoint</text>
-        <text class="node-sub" x="320" y="43" text-anchor="middle">optional</text>
+        <text class="node-sub" x="320" y="43" text-anchor="middle">recommended</text>
         <circle class="badge-a" cx="250" cy="17" r="3"/>
 
         <rect class="node-box" x="245" y="78" width="150" height="40" rx="6"/>
@@ -161,7 +161,7 @@
 
         <rect class="node-box" x="490" y="46" width="140" height="40" rx="6"/>
         <text class="node-label" x="560" y="63" text-anchor="middle">PERPLEXITY.AI</text>
-        <text class="node-sub" x="560" y="77" text-anchor="middle">/page/{slug}-{id}</text>
+        <text class="node-sub" x="560" y="77" text-anchor="middle">/rest/article/{ref}</text>
       </svg>
     </div>
 
@@ -174,28 +174,22 @@
   <section>
     <div class="callout">
       <strong>Before you scrape:</strong> check Perplexity's own site and API offerings for anything a formal
-      integration already covers your use case. This scraper is for reading a Page's own already-published
-      content — everything outside that.
+      integration already covers your use case. This scraper is for reading articles that are already
+      published — everything outside that.
     </div>
     <div class="callout honest">
-      <strong>Read this before you rely on it:</strong> a live incident now exists — on 2026-09-21,
-      perplexity.ai served a real Cloudflare managed challenge, twice, to two different real Page URLs,
-      instead of any Page content. This repo's block detection correctly catches it. That does NOT yet
-      confirm what this repo's own scraper engines get when they actually run against the site, or any
-      selector in <code>page_parser.py</code> for a real Page's content — some grounded in public research
-      (<code>robots.txt</code>, the sitemap, Perplexity's own announcement blog for the Pages feature), some
-      just a reasonable bet, all still unconfirmed. What IS confirmed: Pages are real, public articles at
-      <code>perplexity.ai/page/{slug}-{id}</code>, allowed by <code>robots.txt</code>, with no site-search
-      mechanism — which is why this tool takes a URL rather than a query, unlike its sibling scrapers — and
-      the site fronts at least some requests with a Cloudflare challenge. The architecture (exit codes,
-      output schema, dedupe, all three engines) is real and tested, same as every 2scraper repo. Full
-      details in the
-      <a href="https://github.com/2scraper/perplexity-scraper#readme">README</a> — read it first.
+      <strong>What to expect:</strong> every row comes from the site's own article API
+      (<code>/rest/article/</code>), called from inside the article page — never from the HTML. Live-verified on
+      2026-09-30 and 2026-10-01 over a US Scraping Browser API profile: Playwright and Puppeteer scraped classic
+      Pages and Discover articles end to end, 25 of 25 on a <code>--discover top</code> run, and a dead URL was
+      reported as not found. Cloudflare blocked every local browser tried; the run says so (exit 3) instead of
+      returning bad data. Full details in the
+      <a href="https://github.com/2scraper/perplexity-scraper#readme">README</a>.
     </div>
   </section>
 
   <section id="engines">
-    <div class="section-eyebrow">The Pages board</div>
+    <div class="section-eyebrow">The articles board</div>
     <h2>One file per engine</h2>
     <table class="board-table">
       <thead>
@@ -205,13 +199,13 @@
         <tr>
           <td>Playwright</td>
           <td>Python, single file</td>
-          <td>Primary engine, local-first — full Scraping Browser API support incl. captcha auto-solve</td>
+          <td>Primary engine — verified live over the Scraping Browser API</td>
           <td><span class="pill buy">RECOMMENDED</span></td>
         </tr>
         <tr>
           <td>Puppeteer</td>
           <td>Python (pyppeteer), single file</td>
-          <td>Same CDP capabilities as Playwright — pyppeteer itself is unmaintained upstream</td>
+          <td>Same CDP capabilities as Playwright, verified live — pyppeteer itself is unmaintained upstream</td>
           <td><span class="pill watch">PARITY</span></td>
         </tr>
         <tr>
@@ -248,20 +242,21 @@
   </section>
 
   <section id="start">
-    <div class="section-eyebrow">Read a Page</div>
+    <div class="section-eyebrow">Read an article</div>
     <h2>Get started</h2>
     <div class="codebox">
 <span class="cmt"># clone, install, configure</span><br>
 <span class="cmd">git clone https://github.com/2scraper/perplexity-scraper.git</span><br>
 <span class="cmd">cd perplexity-scraper && pip install -r requirements-playwright.txt && playwright install chromium</span><br>
-<span class="cmd">cp .env.example .env</span> <span class="cmt"># optional — not required for a local-first run</span><br><br>
-<span class="cmt"># a single Page</span><br>
-<span class="cmd">python3 playwright_scraper.py --url "https://www.perplexity.ai/page/some-article-AbCdEfGhIjKlMnOpQrStUv" --format json --out results.json</span><br><br>
-<span class="cmt"># or a batch of Pages from a file</span><br>
+<span class="cmd">cp .env.example .env</span> <span class="cmt"># PERPLEXITY_CDP_ENDPOINT goes here</span><br><br>
+<span class="cmt"># the Discover feed, 20 articles</span><br>
+<span class="cmd">python3 playwright_scraper.py --discover top --max-results 20 --format json --out results.json</span><br><br>
+<span class="cmt"># or one article, or a batch from a file</span><br>
+<span class="cmd">python3 playwright_scraper.py --url "https://www.perplexity.ai/page/ai-generated-images-tools-prom-efxu3L04SpufSVPD532HQg"</span><br>
 <span class="cmd">python3 playwright_scraper.py --urls-file pages.txt --max-results 20</span>
     </div>
     <p style="color:var(--muted); font-size:14.5px; margin:22px 0 0;">
-      Built for anyone who wants a Perplexity Page's already-published content in a script rather than a
+      Built for anyone who wants published Perplexity articles in a script rather than a
       browser tab — not its live "Ask AI" feature, which is explicitly out of scope.
     </p>
   </section>

@@ -101,7 +101,7 @@ def _positive_int(value: str) -> int:
 
 def build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        description="perplexity.ai Pages scraper — Selenium engine",
+        description="perplexity.ai article scraper (Pages and Discover) — Selenium engine",
         epilog="Credentials belong in .env / PERPLEXITY_PROXY / TWOCAPTCHA_KEY — never on this command line.",
     )
     p.add_argument("--url", default=None, help="One article URL (/page/... or /discover/{topic}/...) — overrides --urls-file/--discover")

@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "perplexity-scraper"
 version = "0.1.0"
-description = "perplexity.ai Pages scraper (Playwright, Selenium, Puppeteer, or 2Captcha's Scraping Browser API via CDP) — local-first, JSON-LD + OG-meta + DOM parsing, captcha solving, proxies, fingerprints"
+description = "perplexity.ai article scraper (classic Pages and Discover) — Playwright, Puppeteer or Selenium, over 2Captcha's Scraping Browser API via CDP; reads the site's own article API; captcha solving, proxies, fingerprints"
 readme = "README.md"
 requires-python = ">=3.9"
 license = { text = "MIT" }

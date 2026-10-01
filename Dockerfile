@@ -1,4 +1,4 @@
-# Playwright engine only (the primary one, local-first — see README) —
+# Playwright engine only (the primary one — see README) —
 # Selenium/pyppeteer need their own images per requirements-*.txt (the
 # three engines' pins are mutually unsatisfiable in one environment; see
 # requirements-puppeteer.txt).

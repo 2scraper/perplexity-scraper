@@ -39,10 +39,8 @@ article. If it ends in "blocked", the API is throttling: raise
 `--delay-between-pages`. "served a bot challenge that did not clear"
 means Cloudflare blocked this browser; switch to `--cdp-endpoint`.
 
-Run everything below from a normal terminal on your own machine — wherever
-this repo lives for you.
 
-## 1. Basic setup
+## 1. Setup
 
 ```bash
 python3 -m venv .venv
@@ -52,100 +50,73 @@ playwright install chromium
 cp .env.example .env
 ```
 
-Leave `.env` blank for the first run — the whole point of "local-first" is
-that nothing in it is required. Fill in `TWOCAPTCHA_KEY` /
-`PERPLEXITY_PROXY` / `PERPLEXITY_CDP_ENDPOINT` later, only if you want to
-test those specifically.
+Put a US Scraping Browser API connection string in `.env` as
+`PERPLEXITY_CDP_ENDPOINT` (format in `.env.example`). `TWOCAPTCHA_KEY` and
+`PERPLEXITY_PROXY` are needed only for steps 5 and 7.
+`python3 env_config.py` shows what was picked up without printing a
+secret.
 
-## 2. The most important run you can do: check what a real Page looks like
-
-This is the step nothing else in this repo could do for you. Pick any
-real Page URL — the one found during this repo's research was
-`https://www.perplexity.ai/page/ai-generated-images-tools-prom-efxu3L04SpufSVPD532HQg`,
-but any real `/page/{slug}-{id}` URL you have works:
+## 2. One article, and what the row should look like
 
 ```bash
 python3 playwright_scraper.py \
   --url "https://www.perplexity.ai/page/ai-generated-images-tools-prom-efxu3L04SpufSVPD532HQg" \
-  --format json --out /tmp/perplexity_test.json --dump-html
+  --out /tmp/perplexity_test.json
 echo "exit code: $?"
-cat /tmp/perplexity_test.json.meta.json 2>/dev/null || echo "(no sidecar — see below)"
+cat /tmp/perplexity_test.json.meta.json
 ```
 
-Four outcomes, and what each one means:
+- **Exit `0`, `"status": "complete"`, one row**: open the JSON. A real
+  row has `title`, `author`, `published_at`, `section_count`,
+  `word_count` and a non-empty `sources_json`; `brand`/`price`/`currency`/
+  `price_source` are always `null`. Compare it with `sample_output.json`.
+- **Exit `3` (blocked)**: either Cloudflare kept the challenge up ("served
+  a bot challenge that did not clear" — expected without
+  `--cdp-endpoint`), or the article API kept answering 401/403/429 after
+  every retry (throttling — wait a few minutes, raise
+  `--delay-between-pages`). Add `--dump-html` and compare the page with
+  `tests/fixtures/perplexity_cloudflare_block_real.html`. A different
+  challenge is new information: save a scrubbed capture next to it and
+  extend `page_parser.BOT_CHALLENGE_MARKERS`.
+- **Exit `4` (zero products, nothing written)**: nothing was read and
+  nothing looked like a block — the logged warning says which URL and
+  why; with `--discover`, usually a topic with no items.
+- **A row with fields that look wrong**: the API's shape changed. Save the
+  `/rest/article/` response under `tests/fixtures/`, update
+  `page_parser.parse_article_json()` and add a `smoke_test.py` check (see
+  `CONTRIBUTING.md`).
 
-- **`exit code: 0`, a `.meta.json` with `"status": "complete"` and one
-  product**: one of the three parsing paths (`json_ld` / `og_meta` /
-  `dom` — check `sources_used`... actually check the row itself, since the
-  sidecar doesn't carry `source_used` per-row; add a print if you need it)
-  happened to match the real page. Open `/tmp/perplexity_test.json` and
-  actually look at the row — a plausible `title`/`author`/`sources_json`
-  is what "happened to match" looks like; a mostly-null row with only
-  `title` filled in is what "matched the wrong shape" looks like even
-  when the exit code says 0.
-- **`exit code: 4` (zero products), no `.meta.json` written** (by design —
-  see `output_writer.finish_run`): open `perplexity_test_debug_1.html` and
-  check, in this order: (1) does the raw HTML contain an
-  `application/ld+json` block at all, and if so what `@type` — confirms or
-  refutes `page_parser._find_article_node`'s guessed type list; (2) does
-  it carry `<meta property="og:title">`/`og:image` — confirms or refutes
-  the OG-meta bet; (3) compare the actual rendered markup against
-  `page_parser.py`'s `_TITLE_SELECTORS`/`_AUTHOR_SELECTORS`/etc. This is
-  the expected first-run outcome if the selectors need updating — not
-  evidence the Page itself is inaccessible.
-- **`exit code: 3` (blocked)**: a `captcha_solver.GENERIC_BOT_CHALLENGE_
-  MARKERS` hit, or an HTTP >=400 status. **This is now the confirmed,
-  expected first outcome, not a hypothetical one** — a live capture
-  already exists (see README "Read this before trusting a run",
-  `page_parser.py`'s module docstring, and `tests/fixtures/
-  perplexity_cloudflare_block_real.html`) showing perplexity.ai serving a
-  Cloudflare managed challenge to a real browser twice in a row. If your
-  own run also lands here, check first whether the raw HTML (`--dump-html`)
-  matches the captured fixture — if it does, this is the same known
-  incident, not new information. If it DOESN'T match (a different
-  challenge type, a different vendor, or a different page shape
-  entirely), that IS genuinely new: save a scrubbed capture alongside the
-  existing one, and extend `page_parser.BOT_CHALLENGE_MARKERS` with
-  markers specific to it, the same way `skyscanner-scraper`'s PerimeterX
-  incident did for that repo (see its CHANGELOG entry for the shape of
-  that kind of entry). Also worth checking, now that a block is
-  confirmed real: whether `--cdp-endpoint` (the Scraping Browser API,
-  which ships 2Captcha's own captcha-solving extension) gets past it when
-  a plain local run doesn't.
-- **A real Page renders but the sources/citations list or the two
-  engagement counters don't parse even though the title does**: this is
-  the single most likely partial-miss outcome given how little of
-  `page_parser.py`'s DOM fallback is confirmed. Capture it and fix just
-  those selectors — the title/author path being right doesn't mean the
-  rest is.
+A dead article id answers API 400: logged as `page_not_found`, no row,
+not counted as a block.
 
-Whatever you find, **updating `page_parser.py`'s selectors/heuristics to
-match what you actually saw — with a saved, scrubbed fixture under
-`tests/fixtures/` and a new `smoke_test.py` check against it — is the
-single most valuable contribution this repo can receive** (see
-`CONTRIBUTING.md`).
-
-## 3. Selenium, for real
+## 3. Puppeteer (pyppeteer)
 
 ```bash
-python3 -m venv .venv-selenium   # separate venv — see README "Engines"
+python3 -m venv .venv-puppeteer       # separate venv — see README "Engines"
+source .venv-puppeteer/bin/activate
+pip install -r requirements-puppeteer.txt
+python3 puppeteer_scraper.py --discover top --max-results 5 --out /tmp/perplexity_puppeteer.json
+```
+
+Same `.env`, same output and exit codes as Playwright.
+
+## 4. Selenium
+
+```bash
+python3 -m venv .venv-selenium
 source .venv-selenium/bin/activate
 pip install -r requirements-selenium.txt
 python3 selenium_scraper.py --url "https://www.perplexity.ai/page/..." --out /tmp/perplexity_selenium.json
 ```
 
-## 4. Puppeteer (pyppeteer), for real
-
-```bash
-python3 -m venv .venv-puppeteer
-source .venv-puppeteer/bin/activate
-pip install -r requirements-puppeteer.txt
-python3 puppeteer_scraper.py --url "https://www.perplexity.ai/page/..." --out /tmp/perplexity_puppeteer.json
-```
+Selenium cannot use the Browser API: with a credentialed
+`PERPLEXITY_CDP_ENDPOINT` it exits `2` before fetching anything. Comment
+the variable out to test it with a local browser (expect Cloudflare,
+exit `3`) or with step 7's proxy.
 
 ## 5. The 2Captcha REST API, with your real key
 
-Confirms the key and hits a real, billed-nothing endpoint first:
+Confirms the key on an endpoint that bills nothing:
 
 ```bash
 python3 -c "
@@ -158,82 +129,63 @@ print('balance: \$%.2f' % c.get_balance())
 "
 ```
 
-## 6. The Scraping Browser API (`--cdp-endpoint`), for real
+## 6. Proxy and Browser API together
 
-`PERPLEXITY_CDP_ENDPOINT` in `.env` is picked up automatically:
+If `.env` has BOTH `PERPLEXITY_CDP_ENDPOINT` and `PERPLEXITY_PROXY`, the
+proxy is ignored with a warning: a CDP session already carries its own
+exit IP (the same goes for `--fingerprint`). Comment out whichever one you
+are not testing.
 
-```bash
-python3 playwright_scraper.py --url "https://www.perplexity.ai/page/..." --out /tmp/perplexity_cdp.json
-```
+## 7. The residential proxy (`--proxy` / `PERPLEXITY_PROXY`)
 
-**Gotcha**, same as the rest of the family: if `.env` has BOTH
-`PERPLEXITY_CDP_ENDPOINT` and `PERPLEXITY_PROXY` set, the code ignores
-`PERPLEXITY_PROXY` and warns — a CDP session already carries its own exit
-IP, stacking a second one on top is a contradiction, not better cover
-(same for a fingerprint over `--cdp-endpoint`). Comment out whichever
-you're not testing if you want to test them in isolation.
-
-## 7. The residential proxy (`--proxy` / `PERPLEXITY_PROXY`), for real
+With `PERPLEXITY_CDP_ENDPOINT` commented out:
 
 ```bash
 python3 playwright_scraper.py --url "https://www.perplexity.ai/page/..." --out /tmp/perplexity_proxy.json
 ```
 
-## 8. A real `--urls-file` batch, and the robots.txt skip
+On 2026-09-30 a US residential proxy got the page but the article API
+answered 403; a run that gets rows this way is worth recording above.
+
+## 8. A `--urls-file` batch, and the robots.txt skip
 
 ```bash
-cat > /tmp/pages.txt <<'EOF'
-https://www.perplexity.ai/page/some-real-page-one
-https://www.perplexity.ai/page/some-real-page-two
+cat > /tmp/pages.txt <<'URLS'
+https://www.perplexity.ai/page/ai-generated-images-tools-prom-efxu3L04SpufSVPD532HQg
+https://www.perplexity.ai/page/a-0000000000000000000000
 https://www.perplexity.ai/search?q=this-should-be-skipped
-EOF
+URLS
 python3 playwright_scraper.py --urls-file /tmp/pages.txt --out /tmp/perplexity_batch.json
 ```
 
-Confirm the third line is logged as skipped (never actually requested —
-see `page_parser.is_disallowed_path`) and the run still completes with two
-products from the first two lines.
+Expect: the `/search` line logged as skipped and never requested
+(`page_parser.is_disallowed_path`), the second line `page_not_found`, and
+a `complete` run with one row.
 
 ## 9. Push to GitHub and let CI do the rest
 
 ```bash
 git remote add origin git@github.com:2scraper/perplexity-scraper.git
 git push -u origin main
-git push --tags
 ```
 
-Then, in the GitHub repo's Settings:
+Then, in the GitHub repo's Settings → **Secrets and variables → Actions**:
 
-- **Secrets and variables → Actions**: add `TWOCAPTCHA_KEY`,
-  `PERPLEXITY_CDP_ENDPOINT` (the canary SKIPS without it — there is no
-  local-browser canary, since Cloudflare blocks local browsers), and
-  `CLAUDE_CODE_OAUTH_TOKEN` (for `claude.yml` / `claude-code-review.yml` —
-  both silently no-op without it, by design, rather than failing every
-  PR check). Optionally set the `PERPLEXITY_CANARY_URL` repo/org
-  **variable** (not a secret — it's just a URL) to a Page you control, so
-  `canary.yml` doesn't depend on someone else's Page staying unedited
-  forever — see that workflow's own comments.
-- **Actions → canary → Run workflow**: dispatch it manually at least once
-  rather than waiting a day for the cron and trusting the badge blind —
-  this is this repo's actual FIRST live test, so look at the run's log and
-  uploaded artifact, not just the badge color.
+- `PERPLEXITY_CDP_ENDPOINT` — the canary SKIPS without it (there is no
+  local-browser canary: Cloudflare blocks local browsers).
+- `TWOCAPTCHA_KEY` — optional for the canary.
+- `CLAUDE_CODE_OAUTH_TOKEN` — for `claude.yml` / `claude-code-review.yml`;
+  both no-op without it rather than failing every PR.
+- Optionally the `PERPLEXITY_CANARY_URL` **variable** (not a secret) — a
+  Page you control, so the canary does not depend on someone else's Page
+  staying up.
+
+Run **Actions → canary → Run workflow** once by hand and read its log and
+uploaded artifact, not just the badge.
 
 ## 10. What "done" looks like
 
-- `tests.yml` green on both Python versions and all three `engine-smoke`
-  matrix legs.
-- At least one manually-dispatched `canary.yml` run, looked at — not just
-  the badge — including whichever of the outcomes in step 2 above it
-  landed on.
-- `page_parser.py` updated to match what you actually saw, with a fixture
-  under `tests/fixtures/` and a new `smoke_test.py` check, per
-  `CONTRIBUTING.md` — this repo now has one real-capture fixture
-  (`tests/fixtures/perplexity_cloudflare_block_real.html`, a confirmed
-  BLOCK page, added 2026-09-21), same as `lidl-scraper`'s
-  `tests/fixtures/lidl_search_real.html`, but still no fixture of a real,
-  successfully-rendered Page — that's the one this checklist item is
-  really asking for.
-- Whether perplexity.ai emits any JSON-LD on a Page, and whether OG meta
-  tags are actually server-rendered there, answered one way or the other
-  (see README "Read this before trusting a run") and reflected in
-  `page_parser.py`'s module docstring.
+- `tests.yml` green: `offline` on both Python versions, `docker`, and all
+  three `engine-smoke` legs.
+- At least one manually dispatched `canary.yml` run, looked at.
+- Steps 2-3 reproduce the table at the top on your own profile.
