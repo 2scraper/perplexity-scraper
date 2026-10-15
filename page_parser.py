@@ -72,7 +72,7 @@ DISCOVER_URL = f"{BASE_URL}/discover"
 # matching the real client is the cheaper assumption.
 _REST_SUFFIX = "version=2.18&source=default"
 
-MIN_CARD_MATCHES = 1  # one URL is one article (CLAUDE.md §5 names the constant; there is no grid)
+MIN_CARD_MATCHES = 1  # one URL is one article (there is no grid)
 
 # Cloudflare's managed challenge, captured live 2026-09-21
 # (tests/fixtures/perplexity_cloudflare_block_real.html). The generic
@@ -372,7 +372,7 @@ def _now_iso() -> str:
 
 def safe_parse_page(html: str, **kwargs) -> PageResult:
     """Engine entry point: a parse exception degrades this ONE url to
-    a rejected result instead of crashing the batch (CLAUDE.md §6/§10)."""
+    a rejected result instead of crashing the batch."""
     try:
         return parse_page(html, **kwargs)
     except Exception as exc:  # noqa: BLE001

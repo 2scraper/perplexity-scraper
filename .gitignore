@@ -34,7 +34,7 @@ node_modules/
 .idea/
 .vscode/
 
-# secrets — `.env*` so a `.env.bak`/`.env.local` copy is never one `git add -A` away (CLAUDE.md §22)
+# secrets — `.env*` so a `.env.bak`/`.env.local` copy is never one `git add -A` away
 *.log
 .env*
 !.env.example

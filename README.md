@@ -184,7 +184,11 @@ previous good file.
 ## Comparing runs
 
 `diff_runs.py old.json new.json` compares two complete runs by `sku`:
-articles added and removed. It refuses comparisons that would mislead:
+articles added and removed, articles whose content changed (`changed`:
+title, author, summary, dates, section/word/source counts) and articles
+whose view/like/fork counters moved (`counters_changed`).
+`--fail-on-change` exits 1 on a content change only; counters move on
+almost every run and never fail it. It refuses comparisons that would mislead:
 two runs of different selections (including the full URL list and limit),
 or a `.meta.json` that does not match
 its file. When a run was capped by `--max-results`, an article missing
@@ -199,7 +203,7 @@ the command line.
 
 | Option | Default | |
 |---|---|---|
-| `--url` / `--urls-file` / `--discover TOPIC` | | what to scrape, in that order of precedence; only `top` has Discover items for an anonymous visitor |
+| `--url` / `--urls-file` / `--discover TOPIC` | | what to scrape, in that order of precedence; only `top` has Discover items for an anonymous visitor. `PERPLEXITY_URL` in `.env` fills `--url` only when neither `--urls-file` nor `--discover` is given |
 | `--max-results` | 30 | articles to fetch |
 | `--delay-between-pages` | 2s | pause between articles and between feed pages |
 | `--format` / `--out` | json / `perplexity_results.<format>` | output format and path |

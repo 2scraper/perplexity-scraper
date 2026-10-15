@@ -9,6 +9,52 @@ rather than being a silent violation of that.
 
 ## [Unreleased]
 
+> **Behaviour changes.** `--retries`, `--retry-delay`,
+> `--delay-between-pages`, `--max-solves` and `--proxy-block-retries` now
+> reject a negative value with a usage error (exit 2) in the Selenium and
+> pyppeteer engines too, as Playwright already did; `--retries -1` used to
+> navigate zero times and end in exit 5. `PERPLEXITY_URL` from the
+> environment or `.env` no longer replaces a typed `--discover` or
+> `--urls-file`. CSV cells that start with `=`, `+`, `-`, `@`, a tab, CR or
+> LF now carry a leading apostrophe (CSV only). `diff_runs.py
+> --fail-on-change` can now fire, on a content change. The canary job now
+> fails, instead of skipping green, when its `PERPLEXITY_CDP_ENDPOINT`
+> secret is missing.
+
+### Fixed
+- Output files and the `.meta.json` sidecar are written to a temporary file
+  beside the target and renamed over it, so a crash or a full disk during a
+  write leaves the previous good output intact instead of a truncated file.
+  A new file gets the usual umask-derived mode; an existing file keeps its
+  own.
+- CSV formula injection: user-written titles, summaries and author names
+  can no longer run as spreadsheet formulas. Numbers are never escaped,
+  the JSON output is unchanged, and the sidecar's `csv_cells_escaped`
+  says how many cells were prefixed.
+- `PERPLEXITY_URL` left in `.env` (as the shipped `.env.example` invited)
+  silently turned `--discover top` or `--urls-file` into a one-article run
+  with exit 0. It now fills `--url` only when neither is typed, and
+  `.env.example` ships it commented out.
+- `diff_runs.py` compared only the price and currency columns, which are
+  always empty for an article, so no change was ever reported. It now
+  reports content changes (`changed`) and counter moves
+  (`counters_changed`) separately.
+- Selenium and pyppeteer accepted negative counts and delays (see above).
+- The credential scan now reports how many files it read, fails if that is
+  implausibly few, and scans `smoke_test.py` too (its credential-shaped test
+  values are assembled from pieces).
+- `python3 env_config.py` now prints only whether a secret is set and its
+  length, not its first and last characters.
+- The Scraping Browser 401 message no longer claims endpoints expire after
+  "about a day": lifetimes vary, and one lasted more than ten days.
+
+### Changed
+- Code comments, check labels, the CI review prompt and this changelog no
+  longer point at a maintainer document the public cannot open; each rule
+  is stated in this repository's own words, and a smoke check keeps it that
+  way. Comments that described other sites instead of this one were
+  rewritten or removed.
+
 ## [0.1.0] — 2026-10-01
 
 First public release. Everything below was developed before it; the
@@ -158,7 +204,7 @@ entries are kept in the order they were written.
   `get_event_loop()`. Its "Target closed" / "No session with given id"
   futures no longer log as ERROR on every page close.
 - `Product`: removed `follow_up_question_count` (nothing the site serves
-  carries it — CLAUDE.md §9); added `like_count`, `fork_count`, `summary`,
+  carries it, and a column that is null on every row should not exist); added `like_count`, `fork_count`, `summary`,
   `read_time_minutes`, `updated_at`. `category` is the Discover topic.
 - Real API captures committed as fixtures
   (`tests/fixtures/*_live_20260930.json`); `sample_output.*` are real rows.
@@ -212,7 +258,7 @@ entries are kept in the order they were written.
   `skyscanner-scraper`, `lidl-scraper`), targeting
   [Perplexity Pages](https://www.perplexity.ai/) — public, wiki-style
   articles at `https://www.perplexity.ai/page/{slug}-{id}`.
-- **Genuine CLI divergence from every sibling repo (CLAUDE.md §1),
+- **Genuine CLI divergence from every sibling repo,
   documented rather than silent**: this repo takes `--url`/`--urls-file`
   instead of `--query`/`--category`. Perplexity Pages have no site-search
   mechanism to point a query at — `robots.txt` explicitly disallows
@@ -221,7 +267,7 @@ entries are kept in the order they were written.
   via its own specific URL. See `page_parser.py`'s module docstring for
   the full research this is based on.
 - Ported the family-shared, no-site-knowledge modules near-verbatim from
-  `lidl-scraper` (CLAUDE.md §7): `output_writer.py` (exit codes,
+  `lidl-scraper`: `output_writer.py` (exit codes,
   `STATUS_BY_EXIT`, `finish_run()` precedence — unchanged), `proxy_pool.py`,
   `captcha_solver.py`, `fingerprint_client.py`, `scraper_api_client.py`,
   `diff_runs.py`, `env_config.py` (renamed to `PERPLEXITY_*` env keys).
@@ -250,9 +296,9 @@ entries are kept in the order they were written.
   attempted and reported as a failure.
 - Standard doc set, CI workflows (`tests.yml`'s offline/docker/
   engine-smoke jobs, `canary.yml`, `claude.yml`, `claude-code-review.yml`),
-  `Dockerfile` (Playwright-only, per CLAUDE.md §14), and a fictional
+  `Dockerfile` (Playwright-only), and a fictional
   `sample_output.json`/`.csv` (clearly marked as such — no real capture
-  exists yet, per CLAUDE.md §15).
+  exists yet).
 
 ### Known gap at the initial build (closed 2026-09-30 — see above)
 - **No live browser capture of perplexity.ai exists yet.** Direct HTTP

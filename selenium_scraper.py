@@ -4,7 +4,7 @@ playwright_scraper.py (same flags, same exit codes, same status semantics
 — see output_writer.finish_run). Selenium is not the primary engine
 (Playwright is); it exists for parity, not because it is preferred.
 
-Same hard engine limits as the rest of the family (see CLAUDE.md §6):
+Same hard engine limits as the rest of the family :
 
   - Selenium CANNOT use an AUTHENTICATED remote CDP endpoint. A
     `--cdp-endpoint` carrying credentials (the Scraping Browser API shape)
@@ -62,8 +62,8 @@ from fingerprint_client import fetch_fingerprint, refuse_if_cdp, user_agent_from
 from scraper_api_client import TwoCaptchaClient
 
 ENGINE_NAME = "selenium"
-# UNVERIFIED for perplexity.ai — carried over from lidl-scraper's own
-# values pending a real capture (see page_parser.py's module docstring).
+# The same timeouts as the Playwright and pyppeteer engines. Not tuned
+# separately for Selenium: no Selenium run has been timed against this site.
 NAV_TIMEOUT_S = 45
 READINESS_WAIT_S = 3.0
 API_TIMEOUT_S = 30
@@ -84,9 +84,7 @@ _CHROME_BINARY = os.environ.get("SELENIUM_CHROME_BIN") or os.environ.get("CHROME
 _CHROMEDRIVER_PATH = os.environ.get("SELENIUM_CHROMEDRIVER_PATH") or os.environ.get("CHROMEDRIVER_PATH")
 
 # Selenium Manager phones home to plausible.io with usage stats by default
-# (confirmed live on stockx-scraper/skyscanner-scraper/lidl-scraper) —
-# opted out the same way here, before this module's own SECURITY.md
-# promise is tested.
+# — opted out here, as SECURITY.md promises.
 os.environ.setdefault("SE_AVOID_STATS", "true")
 
 log = logging.getLogger("selenium_scraper")
@@ -104,23 +102,23 @@ def build_arg_parser() -> argparse.ArgumentParser:
         description="perplexity.ai article scraper (Pages and Discover) — Selenium engine",
         epilog="Credentials belong in .env / PERPLEXITY_PROXY / TWOCAPTCHA_KEY — never on this command line.",
     )
-    p.add_argument("--url", default=None, help="One article URL (/page/... or /discover/{topic}/...) — overrides --urls-file/--discover")
+    p.add_argument("--url", default=None, help="One article URL (/page/... or /discover/{topic}/...) (or set PERPLEXITY_URL, used only when neither --urls-file nor --discover is given) — a typed --url overrides both")
     p.add_argument("--urls-file", default=None)
     p.add_argument("--discover", default=None, metavar="TOPIC", help="Scrape the Discover feed for TOPIC ('top'), up to --max-results articles")
     p.add_argument("--max-results", type=_positive_int, default=30)
-    p.add_argument("--delay-between-pages", type=float, default=2.0)
+    p.add_argument("--delay-between-pages", type=page_flow.nonnegative_float, default=2.0)
     p.add_argument("--format", choices=["json", "csv"], default="json")
     p.add_argument("--out", default=None)
-    p.add_argument("--retries", type=int, default=2)
-    p.add_argument("--retry-delay", type=float, default=3.0)
+    p.add_argument("--retries", type=page_flow.nonnegative_int, default=2)
+    p.add_argument("--retry-delay", type=page_flow.nonnegative_float, default=3.0)
     p.add_argument("--proxy", default=None)
     p.add_argument("--proxy-file", default=None)
     p.add_argument("--proxy-shuffle", action="store_true")
-    p.add_argument("--proxy-block-retries", type=int, default=3)
+    p.add_argument("--proxy-block-retries", type=page_flow.nonnegative_int, default=3)
     p.add_argument("--twocaptcha-key", default=None)
     p.add_argument("--captcha-api", default=None, help="Override the 2Captcha API base URL (testing only)")
     p.add_argument("--solve-captcha", choices=["off", "when-blocked", "always"], default="when-blocked")
-    p.add_argument("--max-solves", type=int, default=8, help="Cap on PAID 2Captcha solves for the whole run (0 = never pay); recorded as solves_spent")
+    p.add_argument("--max-solves", type=page_flow.nonnegative_int, default=8, help="Cap on PAID 2Captcha solves for the whole run (0 = never pay); recorded as solves_spent")
     p.add_argument("--min-score", type=float, default=0.3, help="Minimum acceptable reCAPTCHA v3 score (2Captcha's minScore task field)")
     p.add_argument("--fingerprint", action="store_true", help="Fetch and apply a 2Captcha Fingerprint API profile's user agent (ignored with --cdp-endpoint — see fingerprint_client.refuse_if_cdp)")
     p.add_argument("--fp-tags", default=None, help="Fingerprint API filter, e.g. 'Windows'")

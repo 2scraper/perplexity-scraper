@@ -2,8 +2,7 @@
 """playwright_scraper.py — Playwright engine for the perplexity-scraper
 family member. Playwright is the primary engine (see selenium_scraper.py /
 puppeteer_scraper.py for parity copies — all three must agree on exit
-codes, run status and whether a run crashes or spends money — CLAUDE.md
-§4).
+codes, run status and whether a run crashes or spends money).
 
 **Input**: `--url` (one article), `--urls-file` (one per line), or
 `--discover top` (the Discover feed, paged until `--max-results`). Both
@@ -55,7 +54,7 @@ from scraper_api_client import TwoCaptchaClient
 
 ENGINE_NAME = "playwright"
 
-# --- the handful of engine constants that vary per site (CLAUDE.md §5) ---
+# --- the handful of engine constants that vary per site ---
 NAV_TIMEOUT_MS = 45_000
 READINESS_WAIT_MS = 3_000  # the /rest/ calls need the origin's cookies, not a painted article
 API_TIMEOUT_MS = 30_000
@@ -87,42 +86,28 @@ def _positive_int(value: str) -> int:
     return ivalue
 
 
-def _nonnegative_int(value: str) -> int:
-    ivalue = int(value)
-    if ivalue < 0:
-        raise argparse.ArgumentTypeError(f"must be >= 0 (got {value!r})")
-    return ivalue
-
-
-def _nonnegative_float(value: str) -> float:
-    fvalue = float(value)
-    if fvalue < 0:
-        raise argparse.ArgumentTypeError(f"must be >= 0 (got {value!r})")
-    return fvalue
-
-
 def build_arg_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         description="perplexity.ai article scraper (Pages and Discover) — Playwright engine",
         epilog="Credentials belong in .env / PERPLEXITY_PROXY / TWOCAPTCHA_KEY — never on this command line.",
     )
-    p.add_argument("--url", default=None, help="One article URL: https://www.perplexity.ai/page/... or .../discover/{topic}/... (or set PERPLEXITY_URL) — overrides --urls-file/--discover")
+    p.add_argument("--url", default=None, help="One article URL: https://www.perplexity.ai/page/... or .../discover/{topic}/... (or set PERPLEXITY_URL, used only when neither --urls-file nor --discover is given) — a typed --url overrides both")
     p.add_argument("--urls-file", default=None, help="Path to a file with one article URL per line")
     p.add_argument("--discover", default=None, metavar="TOPIC", help="Scrape the Discover feed for TOPIC ('top' is the one with items for an anonymous visitor), up to --max-results articles")
     p.add_argument("--max-results", type=_positive_int, default=30, help="Cap on how many articles are fetched this run")
-    p.add_argument("--delay-between-pages", type=_nonnegative_float, default=2.0, help="Politeness delay between fetches when processing more than one URL, seconds")
+    p.add_argument("--delay-between-pages", type=page_flow.nonnegative_float, default=2.0, help="Politeness delay between fetches when processing more than one URL, seconds")
     p.add_argument("--format", choices=["json", "csv"], default="json")
     p.add_argument("--out", default=None, help="Output path (default: perplexity_results.<format>)")
-    p.add_argument("--retries", type=_nonnegative_int, default=2, help="Retries on a single page's navigation failure")
-    p.add_argument("--retry-delay", type=_nonnegative_float, default=3.0)
+    p.add_argument("--retries", type=page_flow.nonnegative_int, default=2, help="Retries on a single page's navigation failure")
+    p.add_argument("--retry-delay", type=page_flow.nonnegative_float, default=3.0)
     p.add_argument("--proxy", default=None, help="A single proxy, e.g. http://login:pass@host:port (or set PERPLEXITY_PROXY)")
     p.add_argument("--proxy-file", default=None, help="One proxy per line, same formats as --proxy")
     p.add_argument("--proxy-shuffle", action="store_true")
-    p.add_argument("--proxy-block-retries", type=int, default=3)
+    p.add_argument("--proxy-block-retries", type=page_flow.nonnegative_int, default=3)
     p.add_argument("--twocaptcha-key", default=None, help="(or set TWOCAPTCHA_KEY)")
     p.add_argument("--captcha-api", default=None, help="Override the 2Captcha API base URL (testing only)")
     p.add_argument("--solve-captcha", choices=["off", "when-blocked", "always"], default="when-blocked")
-    p.add_argument("--max-solves", type=_nonnegative_int, default=8, help="Cap on PAID 2Captcha solves for the whole run (0 = never pay); recorded as solves_spent")
+    p.add_argument("--max-solves", type=page_flow.nonnegative_int, default=8, help="Cap on PAID 2Captcha solves for the whole run (0 = never pay); recorded as solves_spent")
     p.add_argument("--min-score", type=float, default=0.3, help="Minimum acceptable reCAPTCHA v3 score (2Captcha's minScore task field)")
     p.add_argument("--cdp-endpoint", default=None, help="Connect to a remote CDP session (e.g. the 2Captcha Scraping Browser API) instead of launching locally (or set PERPLEXITY_CDP_ENDPOINT) — the recommended setup: Cloudflare blocks local browsers")
     p.add_argument("--scraper-api", action="store_true", help="Fetch through 2Captcha's Scraper API, routed through --cdp-endpoint's Scraping Browser profile, instead of driving this browser (needs TWOCAPTCHA_KEY and PERPLEXITY_CDP_ENDPOINT)")
@@ -148,7 +133,7 @@ async def _new_context(
 ) -> BrowserContext:
     """Over --cdp-endpoint, reuse the profile's own default context: it
     holds the cookies (Cloudflare clearance included) that make the
-    profile worth reusing — the same fix shein-scraper needed live. A
+    profile worth reusing. A
     local browser gets a fresh isolated context per URL."""
     if reuse_default and browser.contexts:
         return browser.contexts[0]
@@ -209,7 +194,7 @@ async def _maybe_solve_captcha(
 
 async def _connect_over_cdp(pw, cdp_endpoint: str):
     """Bounded, retried through a still-locked profile, and a 401 says the
-    endpoint expired (scraper_api_client.connect_with_retry, CLAUDE.md §26).
+    endpoint expired (scraper_api_client.connect_with_retry).
     Credentials never reach the message."""
     return await scraper_api_client.connect_with_retry(
         lambda: pw.chromium.connect_over_cdp(cdp_endpoint), redact=redact_credentials, log=log,

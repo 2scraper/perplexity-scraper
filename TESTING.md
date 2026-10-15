@@ -189,7 +189,7 @@ git push -u origin main
 
 Then, in the GitHub repo's Settings → **Secrets and variables → Actions**:
 
-- `PERPLEXITY_CDP_ENDPOINT` — the canary SKIPS without it (there is no
+- `PERPLEXITY_CDP_ENDPOINT` — the canary FAILS without it (there is no
   local-browser canary: Cloudflare blocks local browsers).
 - `TWOCAPTCHA_KEY` — optional for the canary.
 - `CLAUDE_CODE_OAUTH_TOKEN` — for `claude.yml` / `claude-code-review.yml`;
