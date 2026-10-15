@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """page_flow.py — what one fetched article URL MEANS, decided once for all
-three engines (CLAUDE.md §1: three copies of this triage would drift, and
+three engines (three copies of this triage would drift, and
 the drift would be silent — one engine reporting exit 3 where its twin
 reports 0 on the same page).
 
@@ -13,7 +13,7 @@ perplexity.ai answers an article request these ways, all seen live on
      HTML is not evidence of WHICH article it is: a dead URL rendered the
      previously viewed article's headings in full, and the HTML carries
      no id to check against. A row with another article's title is worse
-     than no row (CLAUDE.md §8, "fail loudly");
+     than no row ("fail loudly");
   3. the app page, and the API answers 400 → the article does not exist
      (`not_found`): no row, not a block, never retried harder;
   4. a Cloudflare managed challenge that never cleared (local Chromium,
@@ -108,7 +108,7 @@ def decide(
 
 
 # --------------------------------------------------------------------------- #
-# The ONE fetch loop (CLAUDE.md §26). Until 2026-09-30 each engine carried
+# The ONE fetch loop. Until 2026-09-30 each engine carried
 # its own copy of everything below. Each engine now passes an `Engine`
 # (open a page session, sleep, solve a generic captcha) whose sessions
 # provide NAMED operations — goto, content, fetch_json, wait, close — and
@@ -145,7 +145,7 @@ class Engine(_Protocol):
 
 
 class SolveBudget:
-    """One cap on PAID captcha solves for the whole run (CLAUDE.md §23: a
+    """One cap on PAID captcha solves for the whole run (a
     per-page limit nothing sums is a bill). `limit=0` means never pay."""
 
     def __init__(self, limit: int):
@@ -157,6 +157,25 @@ class SolveBudget:
 
     def spend(self) -> None:
         self.spent += 1
+
+
+def nonnegative_int(value: str) -> int:
+    """argparse type for counts where 0 is meaningful (--retries counts EXTRA
+    attempts, so 0 still navigates once). A negative value used to be
+    accepted by two engines of three and made the loop navigate zero times."""
+    import argparse
+    ivalue = int(value)
+    if ivalue < 0:
+        raise argparse.ArgumentTypeError(f"must be >= 0 (got {value!r})")
+    return ivalue
+
+
+def nonnegative_float(value: str) -> float:
+    import argparse
+    fvalue = float(value)
+    if not fvalue >= 0:  # also rejects nan
+        raise argparse.ArgumentTypeError(f"must be >= 0 (got {value!r})")
+    return fvalue
 
 
 def resolve_urls(args) -> tuple:

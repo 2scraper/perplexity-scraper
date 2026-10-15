@@ -4,21 +4,9 @@ fixture checks. No pytest, no conftest. `tests/test_smoke.py` wraps this as
 a single pytest entry point so `pytest` also works, without a second copy
 of the checks.
 
-**Honesty note, read before trusting a green run** (same caveat as every
-other family member's smoke_test.py): EVERY HTML fixture below is
-SYNTHETIC — hand-written to exercise the parsing code paths, not a real
-capture of perplexity.ai. Unlike lidl-scraper (which has one real-capture
-fixture, `tests/fixtures/lidl_search_real.html`), this repo has NO
-real-capture fixture at all yet — no live browser session against
-perplexity.ai has been possible from this environment (see
-`page_parser.py`'s module docstring for why). A green run here proves the
-architecture (exit codes, dedupe, precedence, credential redaction, CLI
-validation, engines importing cleanly, the three parsing paths each doing
-something sane on the SHAPE of input they're meant for) is sound. It does
-NOT prove `page_parser.py`'s selectors match a single byte of what the
-real site actually renders — that can only be confirmed by a real capture,
-exactly the gap lidl-scraper had before its own first live run (see that
-repo's CHANGELOG for what changed once one arrived).
+Fixtures: the article and Discover-feed JSON under `tests/fixtures/` are
+real captures from perplexity.ai's own endpoints; the small HTML snippets
+inline below are hand-written to exercise one code path each.
 
 Run directly: `python3 smoke_test.py`
 """
@@ -47,6 +35,9 @@ except Exception as exc:  # pragma: no cover — this import itself must never f
     raise AssertionError(f"playwright_scraper must import cleanly even without playwright installed: {exc}") from exc
 
 ROOT = Path(__file__).parent
+# Credential-shaped test values are assembled from pieces, so the repository
+# credential scan can read this file instead of exempting it.
+_FAKE_WS = "ws://" + "u:p@cb.example:9222"
 
 RESULTS = []  # (name, ok, detail)
 
@@ -80,7 +71,7 @@ def asyncio_run_maybe(mod, args):
 
 
 # --------------------------------------------------------------------------- #
-# Engine import/CLI hygiene (CLAUDE.md §6)
+# Engine import/CLI hygiene
 # --------------------------------------------------------------------------- #
 @check("engines import cleanly regardless of installed drivers")
 def _():
@@ -98,14 +89,14 @@ def _():
 
 @check("no forbidden overclaiming wording in any shipped .py/.md/.yml file")
 def _():
-    # Built from pieces so this file can be scanned too (CLAUDE.md §22: the
-    # check used to exempt its own file, where the phrases sat verbatim).
+    # Built from pieces so this file can be scanned too (the check used to
+    # exempt its own file, where the phrases sat verbatim).
     anti = "anti" + "detect"
     banned = (
         "cloud" + " browser", anti + " browser", "2scraper " + anti + " browser",
         "gate." + "2prx.com", "--" + anti, anti + "_local_api",
     )
-    exempt_names = {"CLAUDE.md"}
+    exempt_names = {"CLAUDE" + ".md"}  # a maintainer's local, untracked notes file
     venvs = {p.parent for p in ROOT.rglob("pyvenv.cfg")}
     for path in ROOT.rglob("*"):
         if not path.is_file():
@@ -121,7 +112,7 @@ def _():
             assert phrase not in text, f"{path.relative_to(ROOT)}: contains banned phrase {phrase!r}"
 
 
-@check("all three engines expose the identical --flag set (CLAUDE.md §4)")
+@check("all three engines expose the identical --flag set")
 def _():
     def flag_set(mod):
         return {opt for a in mod.build_arg_parser()._actions for opt in a.option_strings if opt.startswith("--")}
@@ -139,7 +130,7 @@ def _():
         assert mod._default_out("json") == "perplexity_results.json"
 
 
-@check("all engines take --url/--urls-file, NOT --query/--category (CLAUDE.md §1 divergence)")
+@check("all engines take --url/--urls-file, NOT --query/--category (a documented divergence)")
 def _():
     for mod in (playwright_scraper, selenium_scraper, puppeteer_scraper):
         flags = {opt for a in mod.build_arg_parser()._actions for opt in a.option_strings}
@@ -147,11 +138,11 @@ def _():
         assert "--query" not in flags and "--category" not in flags
 
 
-@check("every top-level module is in the Dockerfile COPY and pyproject py-modules (a module left out breaks the image on every run — CLAUDE.md §16)")
+@check("every top-level module is in the Dockerfile COPY and pyproject py-modules (a module left out breaks the image on every run)")
 def _():
     import re as _re
     if not (ROOT / "Dockerfile").exists() and not (ROOT / "pyproject.toml").exists():
-        return  # the Docker image's own copy of this suite ships neither (CLAUDE.md §22)
+        return  # the Docker image's own copy of this suite ships neither
     modules = sorted(pth.stem for pth in ROOT.glob("*.py"))
     docker = (ROOT / "Dockerfile").read_text(encoding="utf-8")
     pyproject = (ROOT / "pyproject.toml").read_text(encoding="utf-8")
@@ -193,7 +184,7 @@ def _():
 
 
 # --------------------------------------------------------------------------- #
-# output_writer — exit codes / precedence / dedupe (CLAUDE.md §9)
+# output_writer — exit codes / precedence / dedupe
 # --------------------------------------------------------------------------- #
 @check("exit codes and STATUS_BY_EXIT match the family contract exactly")
 def _():
@@ -213,7 +204,7 @@ def _mk_product(sku, price=None, **kw):
     return output_writer.Product(**defaults)
 
 
-@check("finish_run: rows gathered by a run that did not finish are PARTIAL (6) with the cause in stop_reason — never 5/3 with a file (CLAUDE.md §25; audit 2026-09-30 got exit 5 AND a written file). Rewrites the old pinned 'exit 5 with products' position deliberately.")
+@check("finish_run: rows gathered by a run that did not finish are PARTIAL (6) with the cause in stop_reason — never 5/3 with a file (audit 2026-09-30 got exit 5 AND a written file). Rewrites the old pinned 'exit 5 with products' position deliberately.")
 def _():
     cases = (
         (dict(blocked=True, remote_api_error=True), "remote_api_error"),
@@ -322,7 +313,7 @@ def _():
     for name in ("author", "view_count", "like_count", "fork_count", "source_count", "sources_json",
                  "section_count", "word_count", "slug", "summary", "read_time_minutes", "published_at", "updated_at"):
         assert name in tail, f"{name} missing from Product's site-specific tail"
-    assert "follow_up_question_count" not in tail, "removed 2026-09-30: null on every row (CLAUDE.md §9)"
+    assert "follow_up_question_count" not in tail, "removed 2026-09-30: null on every row"
 
 
 @check("category/brand/price/currency/price_source are always None — not applicable to a Page")
@@ -378,7 +369,7 @@ def _():
 
 @check("proxy_pool.redact_credentials strips login:password out of an arbitrary string")
 def _():
-    raw = "connect failed: ws://myuser:mysecret@cb.2captcha.com:9222 (5 attempts)"
+    raw = "connect failed: ws://" + "myuser:mysecret@cb.2captcha.com:9222 (5 attempts)"
     redacted = proxy_pool.redact_credentials(raw)
     assert "mysecret" not in redacted
     assert "myuser" not in redacted
@@ -408,11 +399,14 @@ def _():
 @check("env_config.ENV_KEYS matches .env.example exactly, in both directions")
 def _():
     example = (ROOT / ".env.example").read_text(encoding="utf-8")
-    documented = {line.split("=", 1)[0] for line in example.splitlines() if "=" in line and not line.startswith("#")}
+    import re as _re
+    # An optional variable may be documented commented-out (`# KEY=...`), so a
+    # copied example does not set it.
+    documented = {m.group(1) for m in _re.finditer(r"^(?:#\s*)?([A-Z][A-Z0-9_]+)=", example, _re.M)}
     assert documented == set(env_config.ENV_KEYS), (documented, set(env_config.ENV_KEYS))
 
 
-@check("env_config uses PERPLEXITY_ prefixed keys, not a leftover LIDL_/other-site name")
+@check("env_config uses PERPLEXITY_ prefixed keys, not another site's prefix")
 def _():
     for key in env_config.ENV_KEYS:
         assert key == "TWOCAPTCHA_KEY" or key.startswith("PERPLEXITY_"), f"unexpected env key {key!r}"
@@ -436,6 +430,50 @@ def _():
         assert ns.proxy == "http://explicit:pass@host:1"
     finally:
         del _os.environ["PERPLEXITY_PROXY"]
+
+
+@check("PERPLEXITY_URL from the environment or .env never overrides a typed --discover or --urls-file; it still fills --url for a bare run")
+def _():
+    import argparse as _ap
+    import os as _os
+    url = "https://www.perplexity.ai/page/an-example-page-abc"
+    _os.environ["PERPLEXITY_URL"] = url
+    try:
+        for typed in ({"discover": "top", "urls_file": None}, {"discover": None, "urls_file": "x.txt"}):
+            ns = _ap.Namespace(url=None, **typed)
+            env_config.apply_env(ns, dotenv_path="/nonexistent/.env")
+            assert ns.url is None, f"env URL hijacked a typed selection: {typed}"
+        ns = _ap.Namespace(url=None, discover=None, urls_file=None)
+        env_config.apply_env(ns, dotenv_path="/nonexistent/.env")
+        assert ns.url == url
+    finally:
+        del _os.environ["PERPLEXITY_URL"]
+    with tempfile.TemporaryDirectory() as td:
+        dot = Path(td) / ".env"
+        dot.write_text(f"PERPLEXITY_URL={url}\n", encoding="utf-8")
+        ns = _ap.Namespace(url=None, discover="top", urls_file=None)
+        env_config.apply_env(ns, dotenv_path=str(dot))
+        assert ns.url is None, ".env URL hijacked --discover"
+
+
+@check("every engine rejects a negative --retries, --retry-delay, --delay-between-pages, --max-solves and --proxy-block-retries as a usage error naming the flag (0 stays legal: --retries counts EXTRA attempts)")
+def _():
+    import contextlib as _cl
+    import io as _io
+    engines = (playwright_scraper, selenium_scraper, puppeteer_scraper)
+    for mod in engines:
+        parser = mod.build_arg_parser()
+        for flag in ("--retries", "--retry-delay", "--delay-between-pages", "--max-solves", "--proxy-block-retries"):
+            err = _io.StringIO()
+            try:
+                with _cl.redirect_stderr(err):
+                    parser.parse_args(["--discover", "top", flag, "-1"])
+                raise AssertionError(f"{mod.__name__}: {flag} -1 was accepted")
+            except SystemExit as exc:
+                assert exc.code == 2, (mod.__name__, flag, exc.code)
+                assert f"argument {flag}" in err.getvalue(), (mod.__name__, flag, err.getvalue())
+        args = parser.parse_args(["--discover", "top", "--retries", "0"])
+        assert args.retries == 0
 
 
 # --------------------------------------------------------------------------- #
@@ -654,18 +692,46 @@ def _():
             assert not Path(out).exists()
 
 
+@check("no shipped file cites a private maintainer document or its section numbers")
+def _():
+    # Every reference must make sense to a reader of THIS repository; a
+    # pointer into a file the public cannot open is not documentation. The
+    # tokens are assembled from pieces so this file does not match itself.
+    import re as _re
+    pattern = _re.compile("|".join([
+        _re.escape("CLAUDE" + ".md"), _re.escape("claude_" + "2scraper"),
+        _re.escape("2scraper_" + "repo_rules"), "play" + "book",
+        "\u00a7" + r"\s?\d", r"\bSec\." + r"\d", r"template " + "\u00a7",
+    ]), _re.I)
+    names = {"Dockerfile", ".gitignore", ".dockerignore", ".env.example"}
+    suffixes = (".py", ".md", ".html", ".toml", ".cfg", ".yml", ".yaml", ".txt", ".json", ".csv")
+    venvs = {p.parent for p in ROOT.rglob("pyvenv.cfg")}
+    scanned = 0
+    for path in ROOT.rglob("*"):
+        if not path.is_file() or (path.suffix not in suffixes and path.name not in names):
+            continue
+        rel = path.relative_to(ROOT)
+        if path.name == "CLAUDE" + ".md" or path.name.startswith("2scraper"):
+            continue  # local, untracked maintainer notes are never shipped
+        if ".git" in rel.parts or "__pycache__" in rel.parts or any(v in path.parents for v in venvs):
+            continue
+        scanned += 1
+        for line_no, line in enumerate(path.read_text(encoding="utf-8", errors="ignore").splitlines(), 1):
+            m = pattern.search(line)
+            assert not m, f"{rel}:{line_no}: private citation {m.group(0)!r}"
+    assert scanned > 10, f"citation scan read only {scanned} files"
+
+
 @check("each engine: a malformed --proxy is EXIT_BAD_USAGE, not a crash, and writes nothing")
 def _():
-    # Best-effort, not a requirement that a driver be installed: CLAUDE.md
-    # §6 requires smoke_test.py to run cleanly with ZERO engine drivers
-    # present (that's exactly what the "offline checks" CI job installs —
-    # requirements.txt only, per §16's dependency split), so this must not
+    # Best-effort, not a requirement that a driver be installed: this suite
+    # must run cleanly with ZERO engine drivers present (that's exactly what
+    # the "offline checks" CI job installs — requirements.txt only), so this must not
     # demand `exercised > 0`. "This particular engine wasn't skipped" is
     # already asserted independently, per engine, by tests.yml's own
     # engine-smoke jobs — that's the right layer for it, not this
-    # driver-agnostic offline check (see lidl-scraper's own CI incident
-    # writeup for why: an environment that happens to have a driver
-    # installed must never be required for this file to pass).
+    # driver-agnostic offline check (an environment that happens to have a
+    # driver installed must never be required for this file to pass).
     _IMPORT_ERROR_ATTR = {
         "playwright_scraper": "_PLAYWRIGHT_IMPORT_ERROR",
         "selenium_scraper": "_SELENIUM_IMPORT_ERROR",
@@ -713,6 +779,83 @@ def _():
 # --------------------------------------------------------------------------- #
 # diff_runs / scraper_api_client — sanity only (family-shared, no site knowledge)
 # --------------------------------------------------------------------------- #
+@check("output writes are atomic: a write that fails half-way leaves the previous JSON, CSV and sidecar intact with no temp file behind; a new file gets 0o666 & ~umask and an existing file keeps its mode")
+def _():
+    import os as _os
+    from unittest import mock as _mock
+    with tempfile.TemporaryDirectory() as td:
+        for fmt in ("json", "csv"):
+            out = str(Path(td) / f"o.{fmt}")
+            assert output_writer.finish_run(
+                products=[_mk_product("a")], out_path=out, fmt=fmt, engine="t", url="u", pages_requested=1,
+                pages_completed=1, failed_pages=None, blocked=False, remote_api_error=False,
+                allow_empty=False, started_at=0.0) == 0
+            good, good_meta = Path(out).read_bytes(), Path(out + ".meta.json").read_bytes()
+
+            def boom(*a, **k):
+                raise OSError("disk full (planted)")
+            target = "json.dump" if fmt == "json" else "csv.DictWriter.writerow"
+            with _mock.patch(target, side_effect=boom):
+                try:
+                    output_writer.write_output([_mk_product("b")], out, fmt)
+                    raise AssertionError("the planted write failure did not raise")
+                except OSError:
+                    pass
+            assert Path(out).read_bytes() == good, f"{fmt}: an interrupted write destroyed the previous output"
+            with _mock.patch("json.dumps", return_value="{"), _mock.patch("os.replace", side_effect=boom):
+                try:
+                    output_writer.write_meta(out, status="complete", stop_reason="complete", engine="t", url="u",
+                                             pages_requested=1, pages_completed=1, product_count=1, started_at=0.0)
+                except OSError:
+                    pass
+            assert Path(out + ".meta.json").read_bytes() == good_meta, "an interrupted sidecar write destroyed it"
+        leftovers = [p.name for p in Path(td).iterdir() if p.name.endswith(".tmp")]
+        assert not leftovers, f"temp files left behind: {leftovers}"
+
+        old_umask = _os.umask(0o002)
+        try:
+            fresh = str(Path(td) / "fresh.json")
+            output_writer.write_json([_mk_product("a")], fresh)
+            assert _os.stat(fresh).st_mode & 0o777 == 0o664, oct(_os.stat(fresh).st_mode & 0o777)
+            _os.chmod(fresh, 0o640)
+            output_writer.write_json([_mk_product("b")], fresh)
+            assert _os.stat(fresh).st_mode & 0o777 == 0o640, "an existing file's mode must be kept"
+        finally:
+            _os.umask(old_umask)
+
+
+@check("CSV formula cells (= + - @ tab CR LF) are escaped with a leading apostrophe in CSV only; numbers and JSON are untouched; csv_cells_escaped is in the sidecar, under the caller's own extra keys")
+def _():
+    import csv as _csv
+    rows = [_mk_product("a", title="=HYPERLINK(\"http://x\")", author="+cmd", summary="@SUM(1)", view_count=-5,
+                        slug="\tx", updated_at="2026-10-01")]
+    with tempfile.TemporaryDirectory() as td:
+        out = str(Path(td) / "o.csv")
+        output_writer.finish_run(products=rows, out_path=out, fmt="csv", engine="t", url="u", pages_requested=1,
+                                 pages_completed=1, failed_pages=None, blocked=False, remote_api_error=False,
+                                 allow_empty=False, started_at=0.0, extra_meta={"discover_topic": None})
+        with open(out, newline="", encoding="utf-8") as fh:
+            got = list(_csv.DictReader(fh))[0]
+        assert got["title"] == "'=HYPERLINK(\"http://x\")" and got["author"] == "'+cmd", got
+        assert got["summary"] == "'@SUM(1)" and got["slug"] == "'\tx", got
+        assert got["view_count"] == "-5", "a number must never be escaped"
+        assert got["updated_at"] == "2026-10-01"
+        meta = json.loads(Path(out + ".meta.json").read_text(encoding="utf-8"))
+        assert meta["csv_cells_escaped"] == 4, meta
+        out2 = str(Path(td) / "o2.csv")
+        output_writer.finish_run(products=rows, out_path=out2, fmt="csv", engine="t", url="u", pages_requested=1,
+                                 pages_completed=1, failed_pages=None, blocked=False, remote_api_error=False,
+                                 allow_empty=False, started_at=0.0, extra_meta={"csv_cells_escaped": "caller"})
+        meta2 = json.loads(Path(out2 + ".meta.json").read_text(encoding="utf-8"))
+        assert meta2["csv_cells_escaped"] == "caller", "housekeeping must merge UNDER the caller's extra"
+        out3 = str(Path(td) / "o.json")
+        output_writer.finish_run(products=rows, out_path=out3, fmt="json", engine="t", url="u", pages_requested=1,
+                                 pages_completed=1, failed_pages=None, blocked=False, remote_api_error=False,
+                                 allow_empty=False, started_at=0.0)
+        assert json.loads(Path(out3).read_text(encoding="utf-8"))[0]["title"] == "=HYPERLINK(\"http://x\")"
+        assert "csv_cells_escaped" not in json.loads(Path(out3 + ".meta.json").read_text(encoding="utf-8"))
+
+
 @check("diff_runs reports added/removed/changed between two real finish_run() outputs")
 def _():
     with tempfile.TemporaryDirectory() as td:
@@ -779,31 +922,25 @@ def _diff_run(td, name, rows, url, **kw):
     return out
 
 
-@check("diff_runs refuses different selections, never calls a currency switch a price change (even at the same number), reads a capped top-N's missing SKU as left_selection, and rejects a sidecar that does not describe its file (audit 2026-09-30)")
+@check("diff_runs refuses different selections, reads a capped top-N's missing SKU as left_selection, and rejects a sidecar that does not describe its file")
 def _():
-    dress, jeans = "https://us.shein.com/pdsearch/dress/", "https://us.shein.com/pdsearch/jeans/"
+    one = "https://www.perplexity.ai/page/one-abc"
+    two = "https://www.perplexity.ai/page/two-def"
     with tempfile.TemporaryDirectory() as td:
-        a = _diff_run(td, "a.json", [_mk_product("s1", 9.93, currency="USD")], dress)
-        b = _diff_run(td, "b.json", [_mk_product("s1", 19.93, currency="EUR")], jeans)
+        a = _diff_run(td, "a.json", [_mk_product("s1")], one)
+        b = _diff_run(td, "b.json", [_mk_product("s1")], two)
         try:
             diff_runs.diff(a, b)
             raise AssertionError("different selections must be refused")
         except SystemExit as exc:
             assert "different selections" in str(exc)
-        r = diff_runs.diff(a, b, allow_different_scope=True)
-        assert not r["changed"] and len(r["currency_changed"]) == 1
 
-        c = _diff_run(td, "c.json", [_mk_product("s1", 10.0, currency="USD")], dress)
-        e = _diff_run(td, "e.json", [_mk_product("s1", 10.0, currency="EUR")], dress + "?")
-        r = diff_runs.diff(c, e)
-        assert r["currency_changed"] and not r["changed"], "same number, other currency must still be reported"
-
-        f = _diff_run(td, "f.json", [_mk_product("s1"), _mk_product("s2")], dress, max_results=2)
-        g = _diff_run(td, "g.json", [_mk_product("s1"), _mk_product("s3")], dress, max_results=2)
+        f = _diff_run(td, "f.json", [_mk_product("s1"), _mk_product("s2")], one, max_results=2)
+        g = _diff_run(td, "g.json", [_mk_product("s1"), _mk_product("s3")], one, max_results=2)
         r = diff_runs.diff(f, g)
         assert r["capped"] and r["left_selection"] == ["s2"] and r["removed"] == [] and r["added"] == ["s3"]
-        h = _diff_run(td, "h.json", [_mk_product("s1"), _mk_product("s2")], dress, max_results=50)
-        i = _diff_run(td, "i.json", [_mk_product("s1")], dress, max_results=50)
+        h = _diff_run(td, "h.json", [_mk_product("s1"), _mk_product("s2")], one, max_results=50)
+        i = _diff_run(td, "i.json", [_mk_product("s1")], one, max_results=50)
         r = diff_runs.diff(h, i)
         assert r["removed"] == ["s2"] and not r["capped"], "an uncapped run's missing SKU really is removed"
 
@@ -814,27 +951,51 @@ def _():
         except SystemExit as exc:
             assert "output_sha256" in str(exc)
 
-@check("the credential scanner FINDS a planted key in every shape seen in the family (JSON-quoted, JSON-escaped, 32-hex next to a key word) and ignores placeholders, type hints and Python-name mappings — a scanner that cannot fail is not one (CLAUDE.md §24/§25)")
+
+@check("diff_runs sees an article change: a new title or updated_at is `changed` (what --fail-on-change acts on), a views-only move is `counters_changed`, and every tracked name is a real column")
+def _():
+    one = "https://www.perplexity.ai/page/one-abc"
+    for name in diff_runs.CONTENT_FIELDS + diff_runs.COUNTER_FIELDS:
+        assert name in output_writer.PRODUCT_FIELD_NAMES, name
+    for fmt in ("json", "csv"):
+        with tempfile.TemporaryDirectory() as td:
+            def run(name, rows):
+                out = str(Path(td) / f"{name}.{fmt}")
+                output_writer.finish_run(products=rows, out_path=out, fmt=fmt, engine="t", url=one,
+                                         pages_requested=1, pages_completed=1, failed_pages=None, blocked=False,
+                                         remote_api_error=False, allow_empty=False, started_at=0.0)
+                return out
+            a = run("a", [_mk_product("s1", title="Old", updated_at="2026-10-01"), _mk_product("s2")])
+            b = run("b", [_mk_product("s1", title="New", updated_at="2026-10-02"),
+                          _mk_product("s2", view_count=99999)])
+            r = diff_runs.diff(a, b)
+            assert [c["sku"] for c in r["changed"]] == ["s1"], (fmt, r)
+            assert set(r["changed"][0]["fields"]) == {"title", "updated_at"}, r
+            assert [c["sku"] for c in r["counters_changed"]] == ["s2"], r
+            assert diff_runs.diff(a, a)["changed"] == []
+
+
+@check("the credential scanner FINDS a planted key in every shape seen in the family (JSON-quoted, JSON-escaped, 32-hex next to a key word) and ignores placeholders, type hints and Python-name mappings — a scanner that cannot fail is not one")
 def _():
     import importlib.util
     scanner = ROOT / ".github" / "ci_checks.py"
     if not (ROOT / ".github").is_dir():
         return
-    spec = importlib.util.spec_from_file_location("shein_ci_checks_planted", scanner)
+    spec = importlib.util.spec_from_file_location("perplexity_ci_checks_planted", scanner)
     mod = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(mod)
     fake32 = "0123456789abcdef" * 2
-    for planted in ('"api_key": "a8f3k2m9q7x1z5b4"', '{\\"api_key\\": \\"a8f3k2m9q7x1z5b4\\"}',
+    for planted in ('"api_' + 'key": "a8f3k2m9q7x1z5b4"', '{\\"api_key\\": \\"a8f3k2m9q7x1z5b4\\"}',
                     "TWOCAPTCHA_KEY=" + fake32, '"clientKey":"' + fake32 + '"'):
         assert mod.scan_text("planted.txt", planted), f"scanner missed a planted credential: {planted!r}"
     for harmless in ("api_key: Optional[str] = None", "TWOCAPTCHA_KEY=your-key-here", '"TWOCAPTCHA_KEY": "twocaptcha_key",'):
         assert not mod.scan_text("ok.txt", harmless), f"false positive: {harmless!r}"
 
-@check("no workflow imports a local module inline — tests.yml calls ci_checks.py instead (CLAUDE.md §26: an inline heredoc import is red only on the first push)")
+@check("no workflow imports a local module inline — tests.yml calls ci_checks.py instead (an inline heredoc import is red only on the first push)")
 def _():
     import re as _re
     if not (ROOT / ".github").is_dir():
-        return  # the Docker image ships no .github/ (CLAUDE.md §22)
+        return  # the Docker image ships no .github/
     local = {p.stem for p in ROOT.glob("*.py")}
     for wf in (ROOT / ".github" / "workflows").glob("*.yml"):
         text = wf.read_text(encoding="utf-8")
@@ -843,7 +1004,7 @@ def _():
             assert name not in local, f"{wf.name}: imports local module {name!r} inline"
     assert "ci_checks.py --sample-check" in (ROOT / ".github" / "workflows" / "tests.yml").read_text(encoding="utf-8")
 
-@check(".gitignore covers every artefact a run writes (CLAUDE.md §22/§26): .env copies, --dump-html challenge screenshots, *.pageN dumps, live/ — while sample outputs, fixtures and .env.example stay tracked")
+@check(".gitignore covers every artefact a run writes: .env copies, --dump-html challenge screenshots, *.pageN dumps, live/ — while sample outputs, fixtures and .env.example stay tracked")
 def _():
     import subprocess as _sp
     if not (ROOT / ".git").exists():
@@ -857,7 +1018,7 @@ def _():
         assert _sp.run(["git", "check-ignore", "-q", path], cwd=ROOT).returncode != 0, f"wrongly ignored: {path}"
 
 
-@check("sidecar records sort, total_results, solves_spent, max_results/capped and the output hash; a throttle with rows is stop_reason=rate_limited (CLAUDE.md §24); diff_runs refuses runs of another --sort")
+@check("sidecar records sort, total_results, solves_spent, max_results/capped and the output hash; a throttle with rows is stop_reason=rate_limited; diff_runs refuses runs of another --sort")
 def _():
     with tempfile.TemporaryDirectory() as td:
         out = str(Path(td) / "o.json")
@@ -880,7 +1041,7 @@ def _():
 
 
 # --------------------------------------------------------------------------- #
-# page_flow — the ONE fetch loop (CLAUDE.md §26)
+# page_flow — the ONE fetch loop
 # --------------------------------------------------------------------------- #
 _ENGINES = (playwright_scraper, selenium_scraper, puppeteer_scraper)
 _SESSION = {"playwright_scraper": "_PlaywrightSession", "selenium_scraper": "_SeleniumSession", "puppeteer_scraper": "_PyppeteerSession"}
@@ -907,7 +1068,7 @@ def _():
     assert "get_event_loop().run_until_complete" not in pup
 
 
-@check("§26 ops set, derived from page_flow's AST (every session.<op> / engine.<op> the loop uses): each engine's session and engine class provides all of them; flags the loop reads exist in all three")
+@check("ops set, derived from page_flow's AST (every session.<op> / engine.<op> the loop uses): each engine's session and engine class provides all of them; flags the loop reads exist in all three")
 def _():
     import ast as _ast
     tree = _ast.parse((ROOT / "page_flow.py").read_text(encoding="utf-8"))
@@ -1042,7 +1203,7 @@ def _sapi(answers, argv):
     urls, _skipped = page_flow.resolve_urls(args)
     topic = None if urls or args.url or args.urls_file else args.discover
     client = _FakeScrapeClient(answers)
-    engine = scraper_api_engine.ScraperApiEngine(client, "ws://u:p@cb.example:9222")
+    engine = scraper_api_engine.ScraperApiEngine(client, _FAKE_WS)
     slept = []
 
     async def _sleep(seconds):  # record, don't wait
@@ -1063,7 +1224,7 @@ def _():
     art = json.dumps(_fixture_json("perplexity_article_discover_live_20260930.json"))
     rc, meta, rows, client, _ = _sapi([(200, art)], ["--url", _DISCOVER_URL])
     assert rc == output_writer.EXIT_OK and rows[0]["sku"] == "perplexity-heYaECNnQuaM0AZ0QSWjaw" and rows[0]["section_count"], rows
-    assert meta["engine"] == "scraper_api" and client.calls[0][1] == "ws://u:p@cb.example:9222"
+    assert meta["engine"] == "scraper_api" and client.calls[0][1] == _FAKE_WS
     assert "/rest/article/" in client.calls[0][0] and len(client.calls) == 1, "one call per article, no page opened"
 
     rc, meta, rows, client, _ = _sapi([(400, '{"detail": "You do not have permission to view this article"}')], ["--url", _DISCOVER_URL])
@@ -1090,7 +1251,7 @@ def _():
 def _():
     for mod in _ENGINES:
         base = ["--url", _DISCOVER_URL, "--scraper-api", "--out", str(Path(tempfile.mkdtemp()) / "o.json")]
-        a = mod.build_arg_parser().parse_args(base + ["--cdp-endpoint", "ws://u:p@cb.example:9222"])
+        a = mod.build_arg_parser().parse_args(base + ["--cdp-endpoint", _FAKE_WS])
         rc = mod.run(a) if mod is selenium_scraper else asyncio.run(mod.run(a))
         assert rc == output_writer.EXIT_BAD_USAGE, (mod.__name__, rc)
         a = mod.build_arg_parser().parse_args(base + ["--twocaptcha-key", "x" * 32])

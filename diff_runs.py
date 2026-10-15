@@ -1,27 +1,30 @@
 #!/usr/bin/env python3
-"""diff_runs.py — diff two runs by `sku`. No site knowledge.
+"""diff_runs.py — diff two runs of this scraper by `sku`.
 
 Refuses to compare two runs that are not both `status == "complete"` in
 their `.meta.json` sidecar: a partial run's un-fetched pages would otherwise
 read as delisted products, which is a false signal worse than no diff at
 all.
 
-A price difference that comes with a `price_source` difference is reported
-as `source_changed`, not `changed` — it says something about how much of
-each run's data got DOM-confirmed, not about the site. `--fail-on-change`
-ignores `source_changed` rows for exactly that reason.
+What is compared, per article present in both runs:
 
-Added after the 2026-09-30 audit, which diffed one SKU at 9.93 USD from a
-"dress" run against 19.93 EUR from a "jeans" run and got a price change:
+- `changed`: the article itself changed -- any of `CONTENT_FIELDS`
+  (title, author, summary, dates, section/word/source counts). These are
+  what `--fail-on-change` acts on.
+- `counters_changed`: only the view/like/fork counters moved. They move on
+  almost every run, so they are reported but never fail `--fail-on-change`.
 
-- Two runs must share their scope — the sidecar `url` (host, path and
-  query: market, search term, category) and `sort`. Otherwise the diff is
-  refused.
-- A currency difference on a SKU is `currency_changed`, never `changed`,
-  and is reported even when the number is the same.
-- When either run was capped by `--max-results` (sidecar `capped`), a SKU
-  missing from the new run is `left_selection` (it fell out of the top N),
-  not `removed`.
+The family row's price/currency columns are always null on this site (an
+article has no price), so they are not compared at all.
+
+Refusals:
+
+- Two runs must share their selection -- the sidecar `url` and
+  `selection` (the URL list or Discover topic, and the limit). Otherwise
+  the diff is refused.
+- When either run was capped by `--max-results` (sidecar `capped`), an
+  article missing from the new run is `left_selection` (it fell out of the
+  top N), not `removed`.
 - A sidecar carrying `output_sha256` must match the file beside it.
 """
 from __future__ import annotations
@@ -33,6 +36,23 @@ import sys
 from pathlib import Path
 from typing import Dict, List
 from urllib.parse import parse_qsl, urlencode, urlparse
+
+from output_writer import PRODUCT_FIELD_NAMES
+
+# What makes an article "changed". Every name must be a real column: a name
+# the row does not have would compare None against None forever and report
+# nothing (checked at import below).
+CONTENT_FIELDS = (
+    "title", "author", "summary", "published_at", "updated_at",
+    "section_count", "word_count", "source_count", "read_time_minutes",
+    "slug", "image_url",
+)
+# Engagement counters: reported separately, never a reason to fail.
+COUNTER_FIELDS = ("view_count", "like_count", "fork_count")
+
+_unknown = [f for f in CONTENT_FIELDS + COUNTER_FIELDS if f not in PRODUCT_FIELD_NAMES]
+if _unknown:  # pragma: no cover - a guard against a renamed column
+    raise ImportError(f"diff_runs tracks fields the row does not have: {_unknown}")
 
 
 def _load_meta(run_path: str) -> dict:
@@ -102,32 +122,32 @@ def diff(old_path: str, new_path: str, *, allow_different_scope: bool = False) -
     added = sorted(new_skus - old_skus)
     missing = sorted(old_skus - new_skus)
     removed, left_selection = ([], missing) if capped else (missing, [])
-    changed, source_changed, currency_changed = [], [], []
+    changed, counters_changed = [], []
 
     for sku in sorted(old_skus & new_skus):
         o, n = old_rows[sku], new_rows[sku]
-        old_price, new_price = o.get("price"), n.get("price")
-        if (o.get("currency") or None) != (n.get("currency") or None):
-            currency_changed.append({
-                "sku": sku, "old_price": old_price, "old_currency": o.get("currency"),
-                "new_price": new_price, "new_currency": n.get("currency"), "title": n.get("title"),
-            })
-            continue
-        if old_price == new_price:
-            continue
-        entry = {"sku": sku, "old_price": old_price, "new_price": new_price, "title": n.get("title")}
-        if o.get("price_source") != n.get("price_source"):
-            entry["old_price_source"] = o.get("price_source")
-            entry["new_price_source"] = n.get("price_source")
-            source_changed.append(entry)
-        else:
-            changed.append(entry)
+        content = _changes(o, n, CONTENT_FIELDS)
+        if content:
+            changed.append({"sku": sku, "title": n.get("title"), "fields": content})
+        counters = _changes(o, n, COUNTER_FIELDS)
+        if counters:
+            counters_changed.append({"sku": sku, "title": n.get("title"), "fields": counters})
 
     return {
         "added": added, "removed": removed, "left_selection": left_selection,
-        "changed": changed, "source_changed": source_changed, "currency_changed": currency_changed,
+        "changed": changed, "counters_changed": counters_changed,
         "old_count": len(old_rows), "new_count": len(new_rows), "capped": capped,
     }
+
+
+def _norm(value):
+    """CSV reads every cell back as text and a null as ''; compare on that."""
+    return "" if value is None else str(value)
+
+
+def _changes(old: dict, new: dict, names) -> Dict[str, dict]:
+    return {name: {"old": old.get(name), "new": new.get(name)}
+            for name in names if _norm(old.get(name)) != _norm(new.get(name))}
 
 
 def main() -> int:
@@ -135,10 +155,10 @@ def main() -> int:
     p.add_argument("old_run")
     p.add_argument("new_run")
     p.add_argument("--fail-on-change", action="store_true",
-                    help="Exit 1 if any REAL price change is found (source_changed rows are ignored)")
+                    help="Exit 1 if any article's content changed (counters_changed rows are ignored)")
     p.add_argument("--json", action="store_true", help="Print the diff as JSON instead of a summary")
     p.add_argument("--allow-different-scope", action="store_true",
-                    help="Compare runs whose sidecar URLs (market, query, category) differ")
+                    help="Compare runs whose selections (URL list, Discover topic, limit) differ")
     args = p.parse_args()
 
     result = diff(args.old_run, args.new_run, allow_different_scope=args.allow_different_scope)
@@ -151,9 +171,8 @@ def main() -> int:
         print(f"  removed:        {len(result['removed'])}")
         if result["capped"]:
             print(f"  left_selection: {len(result['left_selection'])} (a capped top-N run: fell out of the selection, not delisted)")
-        print(f"  price changed:  {len(result['changed'])}")
-        print(f"  source_changed: {len(result['source_changed'])} (ignored by --fail-on-change)")
-        print(f"  currency_changed: {len(result['currency_changed'])} (ignored by --fail-on-change: a market change, not a price change)")
+        print(f"  changed:        {len(result['changed'])}")
+        print(f"  counters_changed: {len(result['counters_changed'])} (views/likes/forks only; ignored by --fail-on-change)")
 
     if args.fail_on_change and result["changed"]:
         return 1

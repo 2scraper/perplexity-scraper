@@ -45,8 +45,17 @@ ENV_KEYS: Dict[str, str] = {
     "PERPLEXITY_URL": "url",
 }
 
+# A destination filled from the environment only when NONE of these other
+# input flags was typed. `--url` overrides `--urls-file` and `--discover`
+# downstream, so a PERPLEXITY_URL left in the environment or in .env used to
+# turn `--discover top` into a one-article run with exit 0 and no warning.
+# The typed selection wins; the variable is only a default for a bare run.
+YIELDS_TO_TYPED: Dict[str, tuple] = {
+    "url": ("urls_file", "discover"),
+}
+
 _PLACEHOLDER_RE = re.compile(r"^\s*$")
-# CLAUDE.md §17: a copied .env.example can document a credentialled URL the
+# a copied .env.example can document a credentialled URL the
 # way the vendor documents it — `ws://{login}-zone-...-pid-{profileId}:
 # {password}@cb.2captcha.com:9222` — and a literal-placeholder check (an
 # exact string like "your_key_here") never matches that shape, so pasting
@@ -62,9 +71,8 @@ _BRACED_PLACEHOLDER_RE = re.compile(r"[{}]")
 
 
 def _is_placeholder(value: Optional[str]) -> bool:
-    """One implementation, used by both apply_env() and _report() — CLAUDE.md
-    §17 names the alternative (two independent checks that quietly drift
-    apart) as its own defect class. True for an empty value, or one that
+    """One implementation, used by both apply_env() and _report(): two
+    independent checks would quietly drift apart. True for an empty value, or one that
     still contains a `{...}` example fragment."""
     if value is None:
         return True
@@ -107,6 +115,12 @@ def apply_env(args: argparse.Namespace, dotenv_path: str = ".env") -> argparse.N
     for env_key, dest in ENV_KEYS.items():
         if not hasattr(args, dest) or getattr(args, dest) not in (None, ""):
             continue
+        typed = [flag for flag in YIELDS_TO_TYPED.get(dest, ()) if getattr(args, flag, None) not in (None, "")]
+        if typed:
+            if os.environ.get(env_key) or dotenv_values.get(env_key):
+                log.info("%s is set but ignored: --%s was given on the command line.",
+                         env_key, typed[0].replace("_", "-"))
+            continue
         # exported environment variable outranks .env
         value = os.environ.get(env_key)
         source = "environment"
@@ -136,9 +150,9 @@ def apply_env(args: argparse.Namespace, dotenv_path: str = ".env") -> argparse.N
 def _mask(value: Optional[str]) -> str:
     if not value:
         return "(not set)"
-    if len(value) <= 8:
-        return "*" * len(value)
-    return f"{value[:4]}…{value[-2:]} ({len(value)} chars)"
+    # Length only: even a few leading/trailing characters of a key are a
+    # piece of the secret, and this report promises to print none of it.
+    return f"(set, {len(value)} chars)"
 
 
 def _report() -> None:

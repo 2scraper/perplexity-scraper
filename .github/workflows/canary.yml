@@ -14,8 +14,10 @@ jobs:
   # Two inputs, so one deleted article cannot turn the job red on its own:
   #   1. `--discover top --max-results 5` — the live feed, always fresh;
   #   2. one known classic Page (`vars.PERPLEXITY_CANARY_URL` overrides it).
-  # Blocked, empty, partial and remote-error outcomes are red. Without the
-  # PERPLEXITY_CDP_ENDPOINT secret the job SKIPS with a notice — not red.
+  # Blocked, empty, partial and remote-error outcomes are red. So is a run
+  # WITHOUT the PERPLEXITY_CDP_ENDPOINT secret: a canary that skips green
+  # tests nothing while its badge says the site works (13 of 13 scheduled
+  # runs from 2026-10-02 to 2026-10-14 skipped exactly that way).
   canary-cdp:
     runs-on: ubuntu-latest
     env:
@@ -26,12 +28,13 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
-      - name: Skip — no PERPLEXITY_CDP_ENDPOINT secret configured
+      - name: Fail — no PERPLEXITY_CDP_ENDPOINT secret configured
         if: env.HAS_CDP != 'true'
         run: |
-          echo "::notice::Skipping: no PERPLEXITY_CDP_ENDPOINT secret. Set it (a Scraping \
-          Browser API ws:// URL) as a repo secret to turn the canary on. This is a SKIP, \
-          not a pass or a fail."
+          echo "::error::Missing repo secret PERPLEXITY_CDP_ENDPOINT (a 2Captcha Scraping \
+          Browser API ws:// endpoint). Cloudflare refuses every local browser on this site, \
+          so without it the canary cannot reach perplexity.ai and has tested nothing."
+          exit 1
 
       - uses: actions/setup-python@v5
         if: env.HAS_CDP == 'true'
