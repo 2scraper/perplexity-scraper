@@ -9,6 +9,12 @@ rather than being a silent violation of that.
 
 ## [Unreleased]
 
+### Changed
+
+- CI only: the canary bills a Scraping Browser session (`PERPLEXITY_CDP_ENDPOINT`),
+  so it now runs weekly (Mondays 06:41 UTC) instead of daily; a manual dispatch
+  still runs it.
+
 ## [0.2.0] — 2026-10-16
 
 > **Behaviour changes.** `--retries`, `--retry-delay`,
