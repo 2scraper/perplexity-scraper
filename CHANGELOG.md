@@ -9,6 +9,8 @@ rather than being a silent violation of that.
 
 ## [Unreleased]
 
+## [0.2.0] — 2026-10-16
+
 > **Behaviour changes.** `--retries`, `--retry-delay`,
 > `--delay-between-pages`, `--max-solves` and `--proxy-block-retries` now
 > reject a negative value with a usage error (exit 2) in the Selenium and
@@ -313,5 +315,6 @@ entries are kept in the order they were written.
   trusting a run" and `TESTING.md` for exactly what's confirmed versus
   guessed, and what the first live run against this site should check.
 
-[Unreleased]: https://github.com/2scraper/perplexity-scraper/compare/v0.1.0...HEAD
+[Unreleased]: https://github.com/2scraper/perplexity-scraper/compare/v0.2.0...HEAD
+[0.2.0]: https://github.com/2scraper/perplexity-scraper/compare/v0.1.0...v0.2.0
 [0.1.0]: https://github.com/2scraper/perplexity-scraper/releases/tag/v0.1.0
