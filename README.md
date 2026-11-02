@@ -1,4 +1,4 @@
-# perplexity-scraper
+# Perplexity Scraper — Articles, Counters and Cited Sources in Python
 
 ![release](https://img.shields.io/github/v/release/2scraper/perplexity-scraper?sort=semver)
 ![tests](https://github.com/2scraper/perplexity-scraper/actions/workflows/tests.yml/badge.svg)
@@ -6,6 +6,8 @@
 ![python](https://img.shields.io/badge/python-3.9%2B-blue)
 ![licence](https://img.shields.io/badge/licence-MIT-green)
 ![engines](https://img.shields.io/badge/engines-Playwright%20%7C%20Selenium%20%7C%20Puppeteer-informational)
+
+**Perplexity scraper** — an open-source (MIT) Python tool that reads public Perplexity Pages and Discover articles on perplexity.ai and writes one row per article — title, author, summary, publish and update times, view/like/fork counts and every cited source — to JSON or CSV. Local browsers were blocked by Cloudflare in every test so far, so it runs over a US 2Captcha Scraping Browser API profile, which on 2026-09-30 and 2026-10-01 read classic Pages and Discover articles, 25 of 25 on a Discover run. Use it to build a dataset of articles and the sources they cite, or compare two runs with `diff_runs.py` to see which articles were added, removed or changed.
 
 **Scrape Perplexity articles into clean JSON or CSV.** Give it an article
 URL, a file of URLs, or just the Discover feed; get back one row per
@@ -274,6 +276,23 @@ offline suite on Python 3.9 and 3.12, installs the built wheel outside
 the checkout, builds the Docker image and launches Chromium in it, and
 runs each engine in its own virtualenv. `TESTING.md` describes live
 testing with real credentials; `CHANGELOG.md` has the history.
+
+## Guides
+
+- [How to run the 2scraper scrapers: setup, proxies, exit codes and access modes](https://2captcha.com/h/how-to-run-2scraper-open-source-scrapers) — installation, `.env`, `.meta.json` for the whole family.
+
+## Related scrapers
+
+Same CLI conventions, same output contract (one row per item, JSON or CSV, a `.meta.json` sidecar and shared exit codes):
+
+- [Quora scraper](https://github.com/2scraper/quora-scraper) — Answers from question pages, topic feeds and profiles…
+- [Goodreads scraper](https://github.com/2scraper/goodreads-scraper) — Lists, author books, search, full book pages and every…
+- [Hacker News scraper](https://github.com/2scraper/hackernews-scraper) — Story lists, whole comment trees and profiles from Hacker…
+- [Medium scraper](https://github.com/2scraper/medium-scraper) — Tag feeds, day archives, author pages and full story text…
+- [Snapchat scraper](https://github.com/2scraper/snapchat-scraper) — Public Snapchat profiles, Spotlight engagement and story…
+- [TikTok Ad Library scraper](https://github.com/2scraper/tiktok-ads-scraper) — Ads from TikTok's EU Ad Library
+
+All scrapers: [github.com/2scraper](https://github.com/2scraper) · Need another site? [Open a request](https://github.com/2scraper/.github/issues/new?title=%5BScraper%20request%5D%20)
 
 ## Licence
 
