@@ -11,6 +11,7 @@ rather than being a silent violation of that.
 
 ### Changed
 
+- CI only: the scheduled canary now starts at 08:47 UTC (Mondays) instead of 06:41, so canaries that share one Scraping Browser profile no longer start at the same time and lock each other out.
 - CI only: the canary bills a Scraping Browser session (`PERPLEXITY_CDP_ENDPOINT`),
   so it now runs weekly (Mondays 06:41 UTC) instead of daily; a manual dispatch
   still runs it.
